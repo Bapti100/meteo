@@ -28,7 +28,7 @@ import {
 const MODELS = ['AROME', 'ICON-EU', 'GFS'];
 const MODEL_API = { AROME: 'meteofrance_arome_france_hd', 'ICON-EU': 'icon_eu', GFS: 'gfs_seamless' };
 const ENSEMBLE_API = { AROME: 'icon_d2', 'ICON-EU': 'icon_eu', GFS: 'gfs_seamless' };
-const MODEL_DAYS = { AROME: 4, 'ICON-EU': 5, GFS: 10 };
+const MODEL_DAYS = { AROME: 2, 'ICON-EU': 5, GFS: 10 };
 const ENSEMBLE_DAYS = { AROME: 2, 'ICON-EU': 5, GFS: 10 };
 const GFS_STEP_HOURS = 6;
 
@@ -186,6 +186,15 @@ async function fetchBlendedTimeline(loc) {
   return { rows, errors };
 }
 
+function percentile(sortedArr, p) {
+  if (sortedArr.length === 0) return 0;
+  if (sortedArr.length === 1) return sortedArr[0];
+  const idx = (p / 100) * (sortedArr.length - 1);
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  if (lo === hi) return Math.round(sortedArr[lo] * 10) / 10;
+  return Math.round((sortedArr[lo] + (sortedArr[hi] - sortedArr[lo]) * (idx - lo)) * 10) / 10;
+}
+
 async function fetchEnsemble(loc, modelKey) {
   const modelParam = ENSEMBLE_API[modelKey];
   const days = ENSEMBLE_DAYS[modelKey] || 3;
@@ -212,18 +221,28 @@ async function fetchEnsemble(loc, modelKey) {
     const i = startIdx + off;
     const vals850 = keys850.map((k) => h[k][i]).filter((v) => v != null);
     const vals500 = keys500.map((k) => h[k][i]).filter((v) => v != null);
-    const valsPrecip = keysPrecip.map((k) => h[k][i]).filter((v) => v != null);
+    const valsPrecip = keysPrecip.map((k) => h[k][i]).filter((v) => v != null).sort((a, b) => a - b);
     const mean850 = vals850.reduce((a, b) => a + b, 0) / (vals850.length || 1);
     const mean500 = vals500.reduce((a, b) => a + b, 0) / (vals500.length || 1);
     const row = {
       hour: off, control850: vals850[0], control500: vals500[0],
       mean850: Math.round(mean850 * 10) / 10, mean500: Math.round(mean500 * 10) / 10,
-      precip: Math.round((valsPrecip.reduce((a, b) => a + b, 0) / (valsPrecip.length || 1)) * 10) / 10,
+      precipMin: percentile(valsPrecip, 0), precipP25: percentile(valsPrecip, 25),
+      precipMedian: percentile(valsPrecip, 50), precipP75: percentile(valsPrecip, 75),
+      precipMax: percentile(valsPrecip, 100),
       snow: mean850 < 1,
     };
     vals850.slice(0, 8).forEach((v, idx) => { row['m850_' + idx] = v; });
     vals500.slice(0, 8).forEach((v, idx) => { row['m500_' + idx] = v; });
     rows.push(row);
+  }
+  // Le nom des variables existe parfois côté API même quand ce modèle ne calcule
+  // pas réellement les niveaux 850/500 hPa : dans ce cas toutes les valeurs sont
+  // nulles, la moyenne retombe artificiellement à 0 (d'où le trait plat à 0 et
+  // le "risque neige" affiché en continu). On détecte ce cas et on prévient
+  // clairement plutôt que d'afficher un graphique vide.
+  if (!rows.some((r) => r.control850 != null && r.control500 != null)) {
+    throw new Error(`Les niveaux 850/500 hPa ne sont pas réellement calculés par l'ensemble ${modelParam} pour cette zone. Essaie un autre modèle.`);
   }
   return rows;
 }
@@ -482,7 +501,7 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
       {/* Graphique température / précipitations — amplitude maximale du modèle */}
       <div style={{ padding: '14px 8px 4px 0', marginLeft: 8 }}>
         <div style={{ fontSize: 12.5, fontWeight: 500, marginLeft: 8, marginBottom: 2 }}>
-          Courbe {model} — {MODEL_DAYS[model]} jours{model === 'GFS' ? ` (pas de ${GFS_STEP_HOURS}h)` : ''}
+          Courbe {model} — {hourly.length > 0 ? `${hourly.length} h de données` : '…'}{model === 'GFS' ? ` (pas de ${GFS_STEP_HOURS}h)` : ''}
         </div>
         {chartState.loading && <Loading />}
         {chartState.error && <ErrorBox message={`${model} : ${chartState.error}`} />}
@@ -516,8 +535,15 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
           <div style={{ padding: '0 10px 14px' }}>
             <div style={{ fontSize: 11, color: C.muted, padding: '0 4px 8px', lineHeight: 1.4 }}>
               Ensemble {ENSEMBLE_API[model]} (Open-Meteo) — le produit PE-AROME de Météo-France n'étant pas
-              disponible gratuitement, ceci est l'équivalent le plus proche. Plus les traces fines divergent,
-              moins la prévision est fiable.
+              disponible gratuitement, ceci est l'équivalent le plus proche. Chaque trait fin coloré est un
+              <b> membre</b> de l'ensemble (une simulation avec de légères perturbations initiales) ; le trait
+              bleu foncé est le <b>run de contrôle</b> (simulation de référence sans perturbation) ; le trait
+              rouge est la <b>moyenne arithmétique</b> de tous les membres — ce n'est pas un écart-type,
+              juste une moyenne. Plus les membres sont écartés les uns des autres à une échéance donnée, plus
+              l'incertitude est grande à ce moment-là (pas d'écart-type chiffré affiché, seulement la
+              dispersion visuelle). Les points violets sur le graphique du bas marquent les échéances où la
+              moyenne des membres à 850 hPa passe sous 1°C, un indice — pas une certitude — que les
+              précipitations pourraient tomber sous forme de neige.
             </div>
             {ensembleState.loading && <Loading />}
             {ensembleState.error && <ErrorBox message={ensembleState.error} />}
@@ -551,21 +577,18 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
                     <Line type="monotone" dataKey="mean500" stroke="#dc2626" strokeWidth={2.4} dot={false} connectNulls />
                   </ComposedChart>
                 </ResponsiveContainer>
-                <div style={{ fontSize: 10.5, color: C.muted, margin: '6px 4px 2px' }}>Précipitations — points = risque neige (850hPa &lt; 1°C)</div>
-                <ResponsiveContainer width="100%" height={90}>
-                  <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
-                    <CartesianGrid stroke={C.border} vertical={false} />
-                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={Math.max(1, Math.ceil(ensemble.length / 8))} tickLine={false} axisLine={{ stroke: C.border2 }} />
-                    <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
-                    <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 10.5, borderRadius: 4 }} />
-                    <Bar dataKey="precip" fill="#2f8fce" radius={[2, 2, 0, 0]} />
-                    <Line type="monotone" dataKey={(d) => (d.snow ? 0.2 : null)} stroke="#7c3aed" strokeWidth={0} dot={{ r: 2.5, fill: '#7c3aed' }} isAnimationActive={false} connectNulls={false} />
-                  </ComposedChart>
-                </ResponsiveContainer>
+                <div style={{ fontSize: 10.5, color: C.muted, margin: '6px 4px 2px' }}>
+                  Précipitations — boîte à moustaches par heure (façon Météociel)
+                </div>
+                <PrecipBoxPlot data={ensemble} color="#2f6fd1" />
+                <div style={{ display: 'flex', gap: 14, padding: '6px 4px 0', fontSize: 10.5, flexWrap: 'wrap' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 8, height: 8, background: '#2f6fd1', opacity: 0.6, display: 'inline-block', borderRadius: 1 }} /> Boîte = 25e–75e percentile (50% des membres)</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 10, height: 1.5, background: '#2f6fd1', display: 'inline-block' }} /> Trait fin = min–max</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#7c3aed', display: 'inline-block' }} /> Risque neige</span>
+                </div>
                 <div style={{ display: 'flex', gap: 14, padding: '6px 4px 0', fontSize: 10.5, flexWrap: 'wrap' }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 10, height: 2.5, background: '#1e3a8a', display: 'inline-block' }} /> Run de contrôle</span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 10, height: 2.5, background: '#dc2626', display: 'inline-block' }} /> Moyenne des scénarios</span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#7c3aed', display: 'inline-block' }} /> Risque neige</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 10, height: 2.5, background: '#dc2626', display: 'inline-block' }} /> Moyenne des scénarios (temp. 850/500 hPa)</span>
                 </div>
               </>
             )}
@@ -632,6 +655,46 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
   );
 }
 const MEMBER_COLORS = ['#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#84cc16', '#f43f5e', '#6366f1'];
+
+/* --- Box-plot des précipitations d'ensemble (façon Météociel) --- */
+function PrecipBoxPlot({ data, color }) {
+  const W = 640, H = 130, padL = 34, padR = 8, padT = 8, padB = 20;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const n = data.length;
+  if (n === 0) return null;
+  const maxVal = Math.max(1, ...data.map((d) => d.precipMax || 0)) * 1.15;
+  const x = (i) => padL + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  const y = (v) => padT + innerH - (Math.min(v, maxVal) / maxVal) * innerH;
+  const boxW = Math.max(2.5, Math.min(12, (innerW / n) * 0.55));
+  const xInterval = Math.max(1, Math.ceil(n / 9));
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block' }}>
+      {[0, 0.5, 1].map((f, idx) => {
+        const v = maxVal * f;
+        return (
+          <g key={idx}>
+            <line x1={padL} x2={W - padR} y1={y(v)} y2={y(v)} stroke={C.border} strokeWidth={1} />
+            <text x={padL - 5} y={y(v) + 3} fontSize="9" fill={C.muted} textAnchor="end">{Math.round(v * 10) / 10}</text>
+          </g>
+        );
+      })}
+      {data.map((d, i) => {
+        const cx = x(i);
+        if (!d.precipMax) return d.snow ? <circle key={i} cx={cx} cy={H - 6} r={2.3} fill="#7c3aed" /> : null;
+        return (
+          <g key={i}>
+            <line x1={cx} x2={cx} y1={y(d.precipMin)} y2={y(d.precipMax)} stroke={color} strokeWidth={1.3} />
+            <rect x={cx - boxW / 2} y={y(d.precipP75)} width={boxW} height={Math.max(1, y(d.precipP25) - y(d.precipP75))} fill={color} opacity={0.6} rx={1} />
+            {d.snow && <circle cx={cx} cy={H - 6} r={2.3} fill="#7c3aed" />}
+          </g>
+        );
+      })}
+      {data.map((d, i) => (i % xInterval === 0 ? (
+        <text key={'t' + i} x={x(i)} y={H - 4} fontSize="8.5" fill={C.muted} textAnchor="middle">{d.hour}</text>
+      ) : null))}
+    </svg>
+  );
+}
 function Th({ children, style, colSpan }) { return <th colSpan={colSpan} style={{ textAlign: 'left', padding: '7px 8px', color: C.muted, fontWeight: 500, fontSize: 10, ...style }}>{children}</th>; }
 function Td({ children, style }) { return <td style={{ padding: '4px 8px', color: C.text, whiteSpace: 'nowrap', ...style }}>{children}</td>; }
 
