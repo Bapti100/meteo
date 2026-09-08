@@ -125,7 +125,7 @@ function resolveWeatherCode(rawCode, cloud, precip) {
 
 async function fetchForecast(loc, modelKey, days) {
   const modelParam = MODEL_API[modelKey];
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}&hourly=temperature_2m,precipitation,weathercode,cloud_cover,windspeed_10m,winddirection_10m,windgusts_10m,relativehumidity_2m,pressure_msl&models=${modelParam}&forecast_days=${days}&timezone=auto`;
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}&hourly=temperature_2m,precipitation,weathercode,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,windspeed_10m,winddirection_10m,windgusts_10m,relativehumidity_2m,pressure_msl&models=${modelParam}&forecast_days=${days}&timezone=auto`;
   const res = await fetch(url);
   const json = await res.json();
   if (json.error) throw new Error(json.reason || `${modelKey} indisponible pour cette zone`);
@@ -134,7 +134,9 @@ async function fetchForecast(loc, modelKey, days) {
   for (let i = 0; i < h.time.length; i++) {
     const t = new Date(h.time[i]);
     const precip = h.precipitation ? (h.precipitation[i] ?? 0) : 0;
-    const cloud = h.cloud_cover ? h.cloud_cover[i] : null;
+    const cloudLayers = [h.cloud_cover_low?.[i], h.cloud_cover_mid?.[i], h.cloud_cover_high?.[i]].filter((v) => v != null);
+    const cloud = h.cloud_cover ? (h.cloud_cover[i] ?? (cloudLayers.length ? Math.max(...cloudLayers) : null))
+      : (cloudLayers.length ? Math.max(...cloudLayers) : null);
     const rawCode = h.weathercode ? h.weathercode[i] : null;
     rows.push({
       t, hour: t.getHours(), dayKey: dayKeyOf(t),
@@ -194,6 +196,9 @@ async function fetchEnsemble(loc, modelKey) {
   const keys850 = membersFor('temperature_850hPa');
   const keys500 = membersFor('temperature_500hPa');
   const keysPrecip = membersFor('precipitation');
+  if (keys850.length === 0 || keys500.length === 0) {
+    throw new Error(`Les niveaux de pression 850/500 hPa ne sont pas fournis par l'ensemble ${modelParam}. Essaie un autre modèle.`);
+  }
   const now = new Date(); now.setMinutes(0, 0, 0);
   let startIdx = time.findIndex((tStr) => new Date(tStr).getTime() >= now.getTime());
   if (startIdx < 0) startIdx = 0;
@@ -533,10 +538,12 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
                   </ComposedChart>
                 </ResponsiveContainer>
                 <div style={{ fontSize: 10.5, color: C.muted, margin: '6px 4px 2px' }}>Précipitations — points = risque neige (850hPa &lt; 1°C)</div>
-                <ResponsiveContainer width="100%" height={70}>
+                <ResponsiveContainer width="100%" height={90}>
                   <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
-                    <XAxis dataKey="hour" hide />
+                    <CartesianGrid stroke={C.border} vertical={false} />
+                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={7} tickLine={false} axisLine={{ stroke: C.border2 }} />
                     <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
+                    <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 10.5, borderRadius: 4 }} />
                     <Bar dataKey="precip" fill="#2f8fce" radius={[2, 2, 0, 0]} />
                     <Line type="monotone" dataKey={(d) => (d.snow ? 0.2 : null)} stroke="#7c3aed" strokeWidth={0} dot={{ r: 2.5, fill: '#7c3aed' }} isAnimationActive={false} connectNulls={false} />
                   </ComposedChart>
@@ -552,7 +559,7 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
         )}
       </div>
 
-      {/* Frise combinée multi-modèles */}
+      {/* Frise combinée multi-modèles — façon Météociel */}
       <div style={{ padding: '0 16px 4px', fontSize: 13, fontWeight: 600 }}>Prévision détaillée (modèle selon l'échéance)</div>
       <div style={{ padding: '0 16px 6px', fontSize: 11, color: C.muted, lineHeight: 1.4 }}>
         AROME jusqu'à 42h, puis ICON-EU jusqu'à 84h, puis GFS toutes les 6h au-delà.
@@ -561,31 +568,44 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
       {timelineState.loading && <Loading label="Chargement de la frise…" />}
       {!timelineState.loading && timeline.length > 0 && (
         <div style={{ overflowX: 'auto', margin: '4px 16px 24px', border: `1px solid ${C.border}`, borderRadius: 6 }}>
-          <table className="mono" style={{ borderCollapse: 'collapse', width: '100%', minWidth: 720, fontSize: 11 }}>
+          <table className="mono" style={{ borderCollapse: 'collapse', width: '100%', minWidth: 660, fontSize: 11.5 }}>
             <thead>
               <tr style={{ background: C.panel }}>
-                <Th>Jour</Th><Th>Heure</Th><Th>Temp.</Th><Th>Vent (dir · moy · raf.)</Th>
+                <Th>Jour</Th><Th>Heure</Th><Th>Temp.</Th><Th colSpan={3}>Vent km/h</Th>
                 <Th>Pluie 1h</Th><Th>Humid.</Th><Th>Pression</Th><Th>Temps</Th><Th>Modèle</Th>
+              </tr>
+              <tr style={{ background: C.panel }}>
+                <Th /><Th /><Th /><Th style={{ textAlign: 'center' }}>dir.</Th><Th style={{ textAlign: 'center' }}>moy.</Th><Th style={{ textAlign: 'center' }}>raf.</Th>
+                <Th /><Th /><Th /><Th /><Th />
               </tr>
             </thead>
             <tbody>
-              {timeline.map((r, i) => {
-                const { text } = wmoInfo(r.weathercode);
+              {withDaySpans(timeline).map((r, i) => {
+                const { text, Icon } = wmoInfo(r.weathercode);
+                const tColor = tempColor(r.temp);
+                const rColor = windColor(r.windRaf);
+                const hColor = humColor(r.humidity);
                 return (
                   <React.Fragment key={i}>
                     {i === firstDailyIdx && (
-                      <tr><td colSpan={9} style={{ background: '#eef1f5', padding: '6px 10px', color: C.muted, fontSize: 10.5, borderTop: `1px solid ${C.border}` }}>Météo par jour — résolution 6h</td></tr>
+                      <tr><td colSpan={11} style={{ background: '#eef1f5', padding: '6px 10px', color: C.muted, fontSize: 10.5, borderTop: `1px solid ${C.border}` }}>Météo par jour — résolution 6h</td></tr>
                     )}
-                    <tr style={{ borderTop: `1px solid ${C.border}`, background: r.model ? '#f2f6fb' : 'transparent' }}>
-                      <Td style={{ fontWeight: r.isNewDay ? 600 : 400 }}>{r.isNewDay ? r.dayLabel : ''}</Td>
-                      <Td>{String(r.hour).padStart(2, '0')}h</Td>
-                      <Td>{r.temp}°C</Td>
-                      <Td>{windDirFull(r.windDir)} · {r.windMoy} · {r.windRaf}</Td>
-                      <Td>{r.precip > 0 ? `${r.precip} mm` : '--'}</Td>
-                      <Td>{r.humidity}%</Td>
-                      <Td>{r.pressure != null ? `${r.pressure} hPa` : '--'}</Td>
-                      <Td>{text}</Td>
-                      <Td style={{ color: r.model ? (MODEL_INFO[r.model]?.color || C.text) : C.muted, fontWeight: r.model ? 700 : 400 }}>{r.model || ''}</Td>
+                    <tr style={{ borderTop: `1px solid ${C.border}` }}>
+                      {r.daySpan > 0 && (
+                        <td rowSpan={r.daySpan} style={{ background: '#dff3fa', color: C.text, fontWeight: 600, textAlign: 'center', padding: '4px 8px', verticalAlign: 'middle', borderRight: `1px solid ${C.border}` }}>{r.dayLabel}</td>
+                      )}
+                      <Td style={{ textAlign: 'center' }}>{String(r.hour).padStart(2, '0')}:00</Td>
+                      <td style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 700, background: tColor, color: textColorFor(tColor) }}>{r.temp}°C</td>
+                      <td style={{ padding: '4px 6px', textAlign: 'center', background: '#e3f2f8' }} title={windDirFull(r.windDir)}>
+                        <span style={{ display: 'inline-block', transform: `rotate(${r.windDir}deg)`, fontSize: 13 }}>↑</span>
+                      </td>
+                      <Td style={{ textAlign: 'center' }}>{r.windMoy}</Td>
+                      <td style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 600, background: rColor, color: textColorFor(rColor) }}>{r.windRaf}</td>
+                      <Td style={{ textAlign: 'center' }}>{r.precip > 0 ? `${r.precip} mm` : '--'}</Td>
+                      <td style={{ padding: '4px 8px', textAlign: 'center', background: hColor, color: textColorFor(hColor) }}>{r.humidity}%</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'center', background: '#ece9f7' }}>{r.pressure != null ? `${r.pressure} hPa` : '--'}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'center', background: '#eaf6fb' }} title={text}><Icon size={16} color={iconColor(r.weathercode)} /></td>
+                      <Td style={{ textAlign: 'center', color: r.model ? (MODEL_INFO[r.model]?.color || C.text) : C.muted, fontWeight: r.model ? 700 : 400 }}>{r.model || ''}</Td>
                     </tr>
                   </React.Fragment>
                 );
@@ -598,8 +618,61 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
   );
 }
 const MEMBER_COLORS = ['#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#84cc16', '#f43f5e', '#6366f1'];
-function Th({ children }) { return <th style={{ textAlign: 'left', padding: '7px 10px', color: C.muted, fontWeight: 500, fontSize: 10 }}>{children}</th>; }
-function Td({ children, style }) { return <td style={{ padding: '6px 10px', color: C.text, whiteSpace: 'nowrap', ...style }}>{children}</td>; }
+function Th({ children, style, colSpan }) { return <th colSpan={colSpan} style={{ textAlign: 'left', padding: '7px 8px', color: C.muted, fontWeight: 500, fontSize: 10, ...style }}>{children}</th>; }
+function Td({ children, style }) { return <td style={{ padding: '4px 8px', color: C.text, whiteSpace: 'nowrap', ...style }}>{children}</td>; }
+
+/* --- groupement par jour pour la fusion de cellules (rowSpan) --- */
+function withDaySpans(rows) {
+  const out = rows.map((r) => ({ ...r, daySpan: 0 }));
+  let i = 0;
+  while (i < out.length) {
+    let j = i;
+    while (j < out.length && out[j].dayKey === out[i].dayKey) j++;
+    out[i].daySpan = j - i;
+    i = j;
+  }
+  return out;
+}
+
+/* --- échelles de couleurs façon Météociel --- */
+function hexToRgb(hex) { hex = hex.replace('#', ''); return [parseInt(hex.substring(0, 2), 16), parseInt(hex.substring(2, 4), 16), parseInt(hex.substring(4, 6), 16)]; }
+function rgbToHex(r, g, b) { return '#' + [r, g, b].map((x) => Math.max(0, Math.min(255, Math.round(x))).toString(16).padStart(2, '0')).join(''); }
+function scaleColor(value, stops) {
+  if (value == null || Number.isNaN(value)) return '#f2f3f4';
+  if (value <= stops[0][0]) return stops[0][1];
+  if (value >= stops[stops.length - 1][0]) return stops[stops.length - 1][1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [v0, c0] = stops[i], [v1, c1] = stops[i + 1];
+    if (value >= v0 && value <= v1) {
+      const t = (value - v0) / (v1 - v0);
+      const [r0, g0, b0] = hexToRgb(c0), [r1, g1, b1] = hexToRgb(c1);
+      return rgbToHex(r0 + (r1 - r0) * t, g0 + (g1 - g0) * t, b0 + (b1 - b0) * t);
+    }
+  }
+  return stops[stops.length - 1][1];
+}
+function textColorFor(hex) {
+  const [r, g, b] = hexToRgb(hex);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.62 ? '#1a1f26' : '#ffffff';
+}
+const TEMP_STOPS = [[-10, '#1a3f8f'], [0, '#3b7fd1'], [8, '#63b3e0'], [14, '#8fd0c4'], [18, '#c8e07a'], [22, '#f5d76e'], [26, '#f5a94e'], [30, '#e2542b'], [35, '#b5121b'], [42, '#6b0d12']];
+const WIND_STOPS = [[0, '#eef2f5'], [10, '#bfe3ee'], [20, '#7fd1e0'], [30, '#5bc98a'], [40, '#f0b94e'], [55, '#d1483b']];
+const HUM_STOPS = [[20, '#f2f3f4'], [50, '#c7cbd1'], [80, '#8b929c'], [100, '#5b616b']];
+function tempColor(v) { return scaleColor(v, TEMP_STOPS); }
+function windColor(v) { return scaleColor(v, WIND_STOPS); }
+function humColor(v) { return scaleColor(v, HUM_STOPS); }
+function iconColor(code) {
+  if (code == null) return '#9aa3ad';
+  if (code === 0 || code === 1) return '#f0b429';
+  if (code === 2 || code === 3) return '#8a95a3';
+  if (code === 45 || code === 48) return '#9aa3ad';
+  if (code >= 51 && code <= 57) return '#4f8fe8';
+  if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) return '#2f6fd1';
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return '#7dd3fc';
+  if (code >= 95) return '#7c3aed';
+  return '#8a95a3';
+}
 
 /* ---------------- Page Comparatif ---------------- */
 function ComparePage({ locations }) {
