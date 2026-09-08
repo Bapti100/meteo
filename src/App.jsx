@@ -29,6 +29,8 @@ const MODELS = ['AROME', 'ICON-EU', 'GFS'];
 const MODEL_API = { AROME: 'meteofrance_arome_france_hd', 'ICON-EU': 'icon_eu', GFS: 'gfs_seamless' };
 const ENSEMBLE_API = { AROME: 'icon_d2', 'ICON-EU': 'icon_eu', GFS: 'gfs_seamless' };
 const MODEL_DAYS = { AROME: 4, 'ICON-EU': 5, GFS: 10 };
+const ENSEMBLE_DAYS = { AROME: 2, 'ICON-EU': 5, GFS: 10 };
+const GFS_STEP_HOURS = 6;
 
 const MODEL_INFO = {
   AROME: {
@@ -186,7 +188,8 @@ async function fetchBlendedTimeline(loc) {
 
 async function fetchEnsemble(loc, modelKey) {
   const modelParam = ENSEMBLE_API[modelKey];
-  const url = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${loc.lat}&longitude=${loc.lon}&hourly=temperature_850hPa,temperature_500hPa,precipitation&models=${modelParam}&forecast_days=3&timezone=auto`;
+  const days = ENSEMBLE_DAYS[modelKey] || 3;
+  const url = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${loc.lat}&longitude=${loc.lon}&hourly=temperature_850hPa,temperature_500hPa,precipitation&models=${modelParam}&forecast_days=${days}&timezone=auto`;
   const res = await fetch(url);
   const json = await res.json();
   if (json.error) throw new Error(json.reason || 'Ensemble indisponible pour cette zone');
@@ -202,9 +205,10 @@ async function fetchEnsemble(loc, modelKey) {
   const now = new Date(); now.setMinutes(0, 0, 0);
   let startIdx = time.findIndex((tStr) => new Date(tStr).getTime() >= now.getTime());
   if (startIdx < 0) startIdx = 0;
-  const hoursToShow = Math.min(45, time.length - startIdx);
+  const hoursToShow = Math.min(days * 24, time.length - startIdx);
+  const step = modelKey === 'GFS' ? GFS_STEP_HOURS : 1;
   const rows = [];
-  for (let off = 0; off < hoursToShow; off++) {
+  for (let off = 0; off < hoursToShow; off += step) {
     const i = startIdx + off;
     const vals850 = keys850.map((k) => h[k][i]).filter((v) => v != null);
     const vals500 = keys500.map((k) => h[k][i]).filter((v) => v != null);
@@ -222,6 +226,14 @@ async function fetchEnsemble(loc, modelKey) {
     rows.push(row);
   }
   return rows;
+}
+
+function chartSeries(hourly, model) {
+  if (model === 'GFS') {
+    return hourly.filter((r) => r.hour % GFS_STEP_HOURS === 0)
+      .map((r) => ({ ...r, xLabel: `${r.t.getDate()}/${r.t.getMonth() + 1} ${String(r.hour).padStart(2, '0')}h` }));
+  }
+  return hourly.map((r) => ({ ...r, xLabel: `${String(r.hour).padStart(2, '0')}h` }));
 }
 
 function aggregateDaily(hourly) {
@@ -467,16 +479,18 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
         </div>
       </div>
 
-      {/* Graphique température / précipitations (modèle sélectionné) */}
+      {/* Graphique température / précipitations — amplitude maximale du modèle */}
       <div style={{ padding: '14px 8px 4px 0', marginLeft: 8 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 500, marginLeft: 8, marginBottom: 2 }}>Courbe {model}</div>
+        <div style={{ fontSize: 12.5, fontWeight: 500, marginLeft: 8, marginBottom: 2 }}>
+          Courbe {model} — {MODEL_DAYS[model]} jours{model === 'GFS' ? ` (pas de ${GFS_STEP_HOURS}h)` : ''}
+        </div>
         {chartState.loading && <Loading />}
         {chartState.error && <ErrorBox message={`${model} : ${chartState.error}`} />}
         {!chartState.loading && !chartState.error && (
           <ResponsiveContainer width="100%" height={190}>
-            <ComposedChart data={hourly.slice(0, 48)} margin={{ top: 4, right: 12, left: -18, bottom: 0 }}>
+            <ComposedChart data={chartSeries(hourly, model)} margin={{ top: 4, right: 12, left: -18, bottom: 0 }}>
               <CartesianGrid stroke={C.border} vertical={false} />
-              <XAxis dataKey="hour" tick={{ fontSize: 9.5, fill: C.muted }} interval={3} tickLine={false} axisLine={{ stroke: C.border2 }} />
+              <XAxis dataKey="xLabel" tick={{ fontSize: 9, fill: C.muted }} interval={model === 'GFS' ? 3 : Math.ceil(hourly.length / 12)} tickLine={false} axisLine={{ stroke: C.border2 }} />
               <YAxis yAxisId="temp" tick={{ fontSize: 9.5, fill: C.muted }} tickLine={false} axisLine={false} width={28} />
               <YAxis yAxisId="precip" orientation="right" tick={{ fontSize: 9.5, fill: C.muted }} tickLine={false} axisLine={false} width={22} />
               <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 11, borderRadius: 4 }} labelStyle={{ color: C.muted }} />
@@ -494,7 +508,7 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
           background: 'none', border: 'none', padding: '11px 14px', color: C.text, cursor: 'pointer',
         }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 500 }}>
-            <Info size={14} color={C.muted} /> Diagramme d'ensemble — {model}
+            <Info size={14} color={C.muted} /> Diagramme d'ensemble — {model} ({ENSEMBLE_DAYS[model]} j{model === 'GFS' ? `, pas ${GFS_STEP_HOURS}h` : ''})
           </span>
           <ChevronRight size={15} style={{ transform: showEnsemble ? 'rotate(90deg)' : 'none', transition: 'transform .15s' }} color={C.muted} />
         </button>
@@ -513,7 +527,7 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
                 <ResponsiveContainer width="100%" height={130}>
                   <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
                     <CartesianGrid stroke={C.border} vertical={false} />
-                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={7} tickLine={false} axisLine={{ stroke: C.border2 }} />
+                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={Math.max(1, Math.ceil(ensemble.length / 8))} tickLine={false} axisLine={{ stroke: C.border2 }} />
                     <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
                     <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 10.5, borderRadius: 4 }} />
                     {Array.from({ length: 8 }, (_, i) => (
@@ -527,7 +541,7 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
                 <ResponsiveContainer width="100%" height={130}>
                   <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
                     <CartesianGrid stroke={C.border} vertical={false} />
-                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={7} tickLine={false} axisLine={{ stroke: C.border2 }} />
+                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={Math.max(1, Math.ceil(ensemble.length / 8))} tickLine={false} axisLine={{ stroke: C.border2 }} />
                     <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
                     <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 10.5, borderRadius: 4 }} />
                     {Array.from({ length: 8 }, (_, i) => (
@@ -541,7 +555,7 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
                 <ResponsiveContainer width="100%" height={90}>
                   <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
                     <CartesianGrid stroke={C.border} vertical={false} />
-                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={7} tickLine={false} axisLine={{ stroke: C.border2 }} />
+                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={Math.max(1, Math.ceil(ensemble.length / 8))} tickLine={false} axisLine={{ stroke: C.border2 }} />
                     <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
                     <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 10.5, borderRadius: 4 }} />
                     <Bar dataKey="precip" fill="#2f8fce" radius={[2, 2, 0, 0]} />
@@ -580,7 +594,7 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
               </tr>
             </thead>
             <tbody>
-              {withDaySpans(timeline).map((r, i) => {
+              {withDaySpansSplit(timeline, firstDailyIdx).map((r, i) => {
                 const { text, Icon } = wmoInfo(r.weathercode);
                 const tColor = tempColor(r.temp);
                 const rColor = windColor(r.windRaf);
@@ -632,6 +646,13 @@ function withDaySpans(rows) {
     i = j;
   }
   return out;
+}
+// Comme un bandeau "Météo par jour" est inséré au milieu de la frise, la fusion
+// de cellules "Jour" ne doit jamais chevaucher cette ligne (sinon la largeur du
+// tableau se décale) : on force une coupure de groupe à cet endroit.
+function withDaySpansSplit(rows, splitIdx) {
+  if (splitIdx <= 0 || splitIdx >= rows.length) return withDaySpans(rows);
+  return [...withDaySpans(rows.slice(0, splitIdx)), ...withDaySpans(rows.slice(splitIdx))];
 }
 
 /* --- échelles de couleurs façon Météociel --- */
