@@ -2,44 +2,46 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Sun, Cloud, CloudRain, CloudDrizzle, CloudSnow, CloudFog, CloudLightning,
   Search, Settings as SettingsIcon, Map as MapIcon, Table as TableIcon,
-  Home, Plus, Trash2, Star, ChevronRight, ChevronDown, Play, Pause, Info
+  Home, Plus, Trash2, Star, ChevronRight, ChevronDown, Play, Pause, Info, AlertTriangle
 } from 'lucide-react';
 import {
-  ResponsiveContainer, ComposedChart, Line, Area, XAxis, YAxis,
+  ResponsiveContainer, ComposedChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip, Bar
 } from 'recharts';
 
 /* ============================================================
-   DONNÉES DE DÉMONSTRATION
+   DONNÉES RÉELLES — API Open-Meteo (gratuite, sans clé, CORS ok)
    ------------------------------------------------------------
-   Il n'existe pas d'API officielle Météociel, ni d'accès
-   navigateur direct (CORS) aux sorties AROME / WRF / GFS.
-   Ce prototype génère donc des prévisions simulées mais
-   cohérentes pour concevoir et tester l'interface. Tout est
-   isolé dans generateForecast() / generateEnsemble() : à
-   remplacer par un vrai appel à un backend proxy le jour venu.
+   - AROME : meteofrance_arome_france_hd (France, haute résolution, ~4 jours)
+   - « WRF » : le WRF n'est pas proposé en accès libre par Météo-France ;
+     on utilise ICON-EU (DWD), un modèle régional européen comparable
+     en résolution/portée, comme relais entre AROME et GFS.
+   - GFS : gfs_seamless (NOAA, portée longue)
+   - Diagramme d'ensemble : API ensemble Open-Meteo (icon_d2 / icon_eu /
+     gfs_seamless selon l'onglet). Le produit PE-AROME de Météo-France
+     n'est pas disponible en accès gratuit, ceci est l'équivalent le
+     plus proche.
+   - Radar : reste une estimation schématique (une vraie mosaïque radar
+     nécessite une autre source de données, non couverte ici).
    ============================================================ */
 
-const MODELS = ['AROME', 'WRF', 'GFS'];
+const MODELS = ['AROME', 'ICON-EU', 'GFS'];
+const MODEL_API = { AROME: 'meteofrance_arome_france_hd', 'ICON-EU': 'icon_eu', GFS: 'gfs_seamless' };
+const ENSEMBLE_API = { AROME: 'icon_d2', 'ICON-EU': 'icon_eu', GFS: 'gfs_seamless' };
+const MODEL_DAYS = { AROME: 4, 'ICON-EU': 5, GFS: 10 };
 
 const MODEL_INFO = {
   AROME: {
-    color: '#2f6fd1',
-    resolution: '1.3 km',
-    portee: '0–42 h',
-    desc: "Modèle français à haute résolution (Météo-France). Très fiable à courte échéance, notamment pour le relief et les orages.",
+    color: '#2f6fd1', resolution: '1.3 km', portee: '0–42 h',
+    desc: "Modèle français à haute résolution (Météo-France, via Open-Meteo). Très fiable à courte échéance.",
   },
-  WRF: {
-    color: '#1f9d6b',
-    resolution: '3–9 km',
-    portee: '42–84 h',
-    desc: "Modèle régional à méso-échelle. Prend le relais d'AROME au-delà de son horizon, bon compromis résolution / portée.",
+  'ICON-EU': {
+    color: '#1f9d6b', resolution: '~7 km', portee: '42–84 h',
+    desc: "Modèle régional européen (DWD ICON-EU), utilisé comme relais entre AROME et GFS — le WRF n'étant pas disponible en accès gratuit.",
   },
   GFS: {
-    color: '#c2720c',
-    resolution: '~25 km',
-    portee: '84 h–10 j',
-    desc: "Modèle global (NOAA). Portée longue mais résolution plus grossière : fiabilité décroissante après 3-4 jours.",
+    color: '#c2720c', resolution: '~25 km', portee: '84 h–10 j',
+    desc: "Modèle global (NOAA GFS). Portée longue mais résolution plus grossière : fiabilité décroissante après 3-4 jours.",
   },
 };
 
@@ -74,6 +76,24 @@ function windDirShort(deg) {
   return s[Math.round(deg / 45) % 8];
 }
 
+/* --- Codes météo WMO (utilisés par Open-Meteo) --- */
+function wmoInfo(code) {
+  const map = {
+    0: ['Ciel clair', Sun], 1: ['Peu nuageux', Sun], 2: ['Voilé', CloudFog], 3: ['Couvert', Cloud],
+    45: ['Brouillard', CloudFog], 48: ['Brouillard givrant', CloudFog],
+    51: ['Bruine faible', CloudDrizzle], 53: ['Bruine', CloudDrizzle], 55: ['Bruine forte', CloudDrizzle],
+    56: ['Bruine verglaçante', CloudDrizzle], 57: ['Bruine verglaçante forte', CloudDrizzle],
+    61: ['Pluie faible', CloudRain], 63: ['Pluie modérée', CloudRain], 65: ['Pluie forte', CloudRain],
+    66: ['Pluie verglaçante', CloudRain], 67: ['Pluie verglaçante forte', CloudRain],
+    71: ['Neige faible', CloudSnow], 73: ['Neige', CloudSnow], 75: ['Neige forte', CloudSnow], 77: ['Neige en grains', CloudSnow],
+    80: ['Averses faibles', CloudRain], 81: ['Averses modérées', CloudRain], 82: ['Averses violentes', CloudRain],
+    85: ['Averses de neige', CloudSnow], 86: ['Averses de neige fortes', CloudSnow],
+    95: ['Orage', CloudLightning], 96: ['Orage avec grêle', CloudLightning], 99: ['Orage violent avec grêle', CloudLightning],
+  };
+  const [text, Icon] = map[code] || ['Indisponible', Cloud];
+  return { text, Icon };
+}
+
 function hashSeed(str) {
   let h = 0;
   for (let i = 0; i < str.length; i++) h = (Math.imul(31, h) + str.charCodeAt(i)) | 0;
@@ -88,89 +108,55 @@ function mulberry32(a) {
   };
 }
 
-function generateForecast(location, model, hours) {
-  const rand = mulberry32(hashSeed(location.name + '|' + model + '|' + Math.floor(Date.now() / 3600000 / 6)));
-  const bias = { AROME: 0, WRF: (rand() - 0.5) * 1.6, GFS: (rand() - 0.5) * 2.6 }[model];
-  const baseTemp = 14 + Math.sin((location.lat / 90) * Math.PI) * 8 - (location.lat - 44) * 0.15;
-  const now = new Date();
-  const data = [];
-  let pressure = 1015 + (rand() - 0.5) * 6;
-  for (let h = 0; h < hours; h++) {
-    const t = new Date(now.getTime() + h * 3600 * 1000);
-    const diurnal = Math.sin(((t.getHours() - 6) / 24) * 2 * Math.PI) * 6;
-    const spread = 1 + (h / hours) * 1.8;
-    const noise = (rand() - 0.5) * 2 * spread;
-    const temp = Math.round((baseTemp + diurnal + bias + noise) * 10) / 10;
-    const precipRoll = rand();
-    const precipThreshold = model === 'GFS' ? 0.7 : 0.8;
-    const precip = precipRoll > precipThreshold ? Math.round(rand() * 6 * spread * 10) / 10 : 0;
-    const windMoy = Math.round(6 + rand() * 14 + (model === 'GFS' ? rand() * 6 : 0));
-    const windRaf = windMoy + Math.round(rand() * 15);
-    const windDir = Math.round(rand() * 360);
-    const cloud = Math.min(100, Math.round(rand() * 100 * (precip > 0 ? 1.3 : 0.9)));
-    pressure += (rand() - 0.5) * 1.2 + Math.sin(h / 30) * 0.15;
-    const humidity = Math.max(20, Math.min(95, Math.round(78 - (temp - 12) * 1.6 + (rand() - 0.5) * 8)));
-    data.push({
-      iso: t.toISOString(), t, hour: t.getHours(),
-      dayKey: t.toISOString().slice(0, 10),
+/* ---------------- Appels API Open-Meteo ---------------- */
+function dayKeyOf(t) { return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; }
+
+async function fetchForecast(loc, modelKey, days) {
+  const modelParam = MODEL_API[modelKey];
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${loc.lat}&longitude=${loc.lon}&hourly=temperature_2m,precipitation,weathercode,windspeed_10m,winddirection_10m,windgusts_10m,relativehumidity_2m,pressure_msl&models=${modelParam}&forecast_days=${days}&timezone=auto`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (json.error) throw new Error(json.reason || `${modelKey} indisponible pour cette zone`);
+  const h = json.hourly;
+  const rows = [];
+  for (let i = 0; i < h.time.length; i++) {
+    const t = new Date(h.time[i]);
+    rows.push({
+      t, hour: t.getHours(), dayKey: dayKeyOf(t),
       dayLabel: t.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' }),
-      temp, precip, windMoy, windRaf, windDir, cloud,
-      pressure: Math.round(pressure), humidity,
+      temp: h.temperature_2m[i], precip: h.precipitation[i] ?? 0, weathercode: h.weathercode[i],
+      windMoy: Math.round(h.windspeed_10m[i] ?? 0), windRaf: Math.round(h.windgusts_10m[i] ?? 0),
+      windDir: Math.round(h.winddirection_10m[i] ?? 0), humidity: Math.round(h.relativehumidity_2m[i] ?? 0),
+      pressure: Math.round(h.pressure_msl[i] ?? 0),
     });
   }
-  return data;
+  const now = new Date(); now.setMinutes(0, 0, 0);
+  const startIdx = rows.findIndex((r) => r.t.getTime() >= now.getTime());
+  return startIdx >= 0 ? rows.slice(startIdx) : rows;
 }
 
-function aggregateDaily(hourly) {
-  const byDay = {};
-  hourly.forEach((r) => {
-    if (!byDay[r.dayKey]) byDay[r.dayKey] = { dayKey: r.dayKey, dayLabel: r.dayLabel, temps: [], precip: 0, winds: [], clouds: [] };
-    byDay[r.dayKey].temps.push(r.temp);
-    byDay[r.dayKey].precip += r.precip;
-    byDay[r.dayKey].winds.push(r.windMoy);
-    byDay[r.dayKey].clouds.push(r.cloud);
-  });
-  return Object.values(byDay).map((d) => ({
-    dayKey: d.dayKey, dayLabel: d.dayLabel,
-    tmin: Math.round(Math.min(...d.temps)), tmax: Math.round(Math.max(...d.temps)),
-    precip: Math.round(d.precip * 10) / 10,
-    wind: Math.round(d.winds.reduce((a, b) => a + b, 0) / d.winds.length),
-    cloud: Math.round(d.clouds.reduce((a, b) => a + b, 0) / d.clouds.length),
-  }));
-}
+async function fetchBlendedTimeline(loc) {
+  const settled = await Promise.allSettled([
+    fetchForecast(loc, 'AROME', MODEL_DAYS.AROME),
+    fetchForecast(loc, 'ICON-EU', MODEL_DAYS['ICON-EU']),
+    fetchForecast(loc, 'GFS', MODEL_DAYS.GFS),
+  ]);
+  const [aromeR, iconR, gfsR] = settled;
+  const arome = aromeR.status === 'fulfilled' ? aromeR.value : [];
+  const icon = iconR.status === 'fulfilled' ? iconR.value : [];
+  const gfs = gfsR.status === 'fulfilled' ? gfsR.value : [];
+  const errors = settled
+    .map((r, i) => (r.status === 'rejected' ? `${MODELS[i]} : ${r.reason.message}` : null))
+    .filter(Boolean);
 
-function skyOf(cloud, precip) {
-  if (precip > 3) return { Icon: CloudLightning, label: 'Pluie forte' };
-  if (precip > 0.5) return { Icon: CloudRain, label: 'Pluie modérée' };
-  if (precip > 0) return { Icon: CloudDrizzle, label: 'Pluie faible' };
-  if (cloud > 75) return { Icon: Cloud, label: 'Couvert' };
-  if (cloud > 55) return { Icon: Cloud, label: 'Mitigé' };
-  if (cloud > 35) return { Icon: CloudFog, label: 'Voilé' };
-  if (cloud > 15) return { Icon: CloudFog, label: 'Peu nuageux' };
-  return { Icon: Sun, label: 'Ciel clair' };
-}
-function weatherText(cloud, precip) {
-  if (precip > 2) return 'Pluie forte';
-  if (precip > 0.5) return 'Pluie modérée';
-  if (precip > 0) return 'Pluie faible';
-  if (cloud > 75) return 'Couvert';
-  if (cloud > 55) return 'Mitigé';
-  if (cloud > 35) return 'Voilé';
-  if (cloud > 15) return 'Peu nuageux';
-  return 'Ciel clair';
-}
-
-/* --- Frise combinée multi-modèles (gère les amplitudes différentes) --- */
-function generateBlendedTimeline(location) {
-  const arome = generateForecast(location, 'AROME', 84);
-  const wrf = generateForecast(location, 'WRF', 84);
-  const gfs = generateForecast(location, 'GFS', 240);
   const rows = [];
-  for (let h = 0; h < 42; h++) rows.push({ ...arome[h], model: h === 0 ? 'AROME' : null, phase: 'arome' });
-  for (let h = 42; h < 84; h++) rows.push({ ...wrf[h], model: h === 42 ? 'WRF' : null, phase: 'wrf' });
+  const n1 = Math.min(42, arome.length);
+  for (let i = 0; i < n1; i++) rows.push({ ...arome[i], model: i === 0 ? 'AROME' : null, phase: 'arome' });
+  const n2 = Math.min(84, icon.length);
+  for (let i = n1; i < n2; i++) rows.push({ ...icon[i], model: i === n1 ? 'ICON-EU' : null, phase: 'icon' });
   let dailyStarted = false;
-  for (let h = 84; h < 240; h++) {
-    const r = gfs[h];
+  for (let i = n2; i < gfs.length; i++) {
+    const r = gfs[i];
     if ([2, 8, 14, 20].includes(r.hour)) {
       rows.push({ ...r, model: !dailyStarted ? 'GFS' : null, phase: 'gfs-daily' });
       dailyStarted = true;
@@ -178,38 +164,77 @@ function generateBlendedTimeline(location) {
   }
   let prevDay = null;
   rows.forEach((r) => { r.isNewDay = r.dayKey !== prevDay; prevDay = r.dayKey; });
-  return rows;
+  return { rows, errors };
 }
 
-/* --- Diagramme d'ensemble (façon PE-AROME) --- */
-const MEMBER_COLORS = ['#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#84cc16', '#f43f5e', '#6366f1'];
-function generateEnsemble(location, model, hours = 45, members = 8) {
-  const rand = mulberry32(hashSeed(location.name + model + 'ens'));
+async function fetchEnsemble(loc, modelKey) {
+  const modelParam = ENSEMBLE_API[modelKey];
+  const url = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${loc.lat}&longitude=${loc.lon}&hourly=temperature_850hPa,temperature_500hPa,precipitation&models=${modelParam}&forecast_days=3&timezone=auto`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (json.error) throw new Error(json.reason || 'Ensemble indisponible pour cette zone');
+  const h = json.hourly;
+  const time = h.time;
+  const membersFor = (base) => Object.keys(h).filter((k) => k.startsWith(base)).sort();
+  const keys850 = membersFor('temperature_850hPa');
+  const keys500 = membersFor('temperature_500hPa');
+  const keysPrecip = membersFor('precipitation');
+  const now = new Date(); now.setMinutes(0, 0, 0);
+  let startIdx = time.findIndex((tStr) => new Date(tStr).getTime() >= now.getTime());
+  if (startIdx < 0) startIdx = 0;
+  const hoursToShow = Math.min(45, time.length - startIdx);
   const rows = [];
-  for (let h = 0; h < hours; h++) {
-    const t850base = 8 + (h / hours) * 12 + Math.sin(h / 8) * 2;
-    const t500base = -8 - Math.sin(h / 15) * 3 - (h > 30 ? (h - 30) * 0.12 : 0);
-    const spread = 0.4 + (h / hours) * 3.2;
-    const row = { hour: h };
-    let sum850 = 0, sum500 = 0;
-    for (let i = 0; i < members; i++) {
-      const v850 = Math.round((t850base + (rand() - 0.5) * spread * 2) * 10) / 10;
-      const v500 = Math.round((t500base + (rand() - 0.5) * spread * 1.4) * 10) / 10;
-      row['m850_' + i] = v850; row['m500_' + i] = v500;
-      sum850 += v850; sum500 += v500;
-    }
-    row.mean850 = Math.round((sum850 / members) * 10) / 10;
-    row.mean500 = Math.round((sum500 / members) * 10) / 10;
-    row.control850 = Math.round((t850base + (rand() - 0.5) * 0.5) * 10) / 10;
-    row.control500 = Math.round((t500base + (rand() - 0.5) * 0.5) * 10) / 10;
-    row.precip = rand() > 0.85 ? Math.round(rand() * 3 * 10) / 10 : 0;
-    row.snow = row.mean850 < 1;
+  for (let off = 0; off < hoursToShow; off++) {
+    const i = startIdx + off;
+    const vals850 = keys850.map((k) => h[k][i]).filter((v) => v != null);
+    const vals500 = keys500.map((k) => h[k][i]).filter((v) => v != null);
+    const valsPrecip = keysPrecip.map((k) => h[k][i]).filter((v) => v != null);
+    const mean850 = vals850.reduce((a, b) => a + b, 0) / (vals850.length || 1);
+    const mean500 = vals500.reduce((a, b) => a + b, 0) / (vals500.length || 1);
+    const row = {
+      hour: off, control850: vals850[0], control500: vals500[0],
+      mean850: Math.round(mean850 * 10) / 10, mean500: Math.round(mean500 * 10) / 10,
+      precip: Math.round((valsPrecip.reduce((a, b) => a + b, 0) / (valsPrecip.length || 1)) * 10) / 10,
+      snow: mean850 < 1,
+    };
+    vals850.slice(0, 8).forEach((v, idx) => { row['m850_' + idx] = v; });
+    vals500.slice(0, 8).forEach((v, idx) => { row['m500_' + idx] = v; });
     rows.push(row);
   }
   return rows;
 }
 
-/* ============================================================ */
+function aggregateDaily(hourly) {
+  const byDay = {};
+  hourly.forEach((r) => {
+    if (!byDay[r.dayKey]) byDay[r.dayKey] = { dayKey: r.dayKey, dayLabel: r.dayLabel, temps: [], precip: 0, codes: {} };
+    byDay[r.dayKey].temps.push(r.temp);
+    byDay[r.dayKey].precip += r.precip;
+    byDay[r.dayKey].codes[r.weathercode] = (byDay[r.dayKey].codes[r.weathercode] || 0) + 1;
+  });
+  return Object.values(byDay).map((d) => {
+    const dominant = Object.entries(d.codes).sort((a, b) => b[1] - a[1])[0][0];
+    return {
+      dayKey: d.dayKey, dayLabel: d.dayLabel,
+      tmin: Math.round(Math.min(...d.temps)), tmax: Math.round(Math.max(...d.temps)),
+      precip: Math.round(d.precip * 10) / 10, weathercode: parseInt(dominant, 10),
+    };
+  });
+}
+
+/* --- petit hook pour données asynchrones --- */
+function useAsync(fn, deps) {
+  const [state, setState] = useState({ loading: true, error: null, data: null });
+  useEffect(() => {
+    let cancelled = false;
+    setState({ loading: true, error: null, data: null });
+    fn().then((d) => { if (!cancelled) setState({ loading: false, error: null, data: d }); })
+      .catch((e) => { if (!cancelled) setState({ loading: false, error: e.message || 'Erreur', data: null }); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return state;
+}
 
 const C = { bg: '#ffffff', panel: '#f6f7f9', border: '#e3e6ea', border2: '#d7dbe1', text: '#1a1f26', muted: '#6b7280' };
 
@@ -253,6 +278,19 @@ export default function App() {
         </div>
         <BottomNav view={view} setView={setView} />
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Composants utilitaires ---------------- */
+function Loading({ label }) {
+  return <div style={{ padding: '20px 16px', fontSize: 12.5, color: C.muted }}>{label || 'Chargement…'}</div>;
+}
+function ErrorBox({ message }) {
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', margin: '8px 16px', padding: 10, background: '#fdf2f2', border: '1px solid #f3c6c6', borderRadius: 6, color: '#a13333', fontSize: 12 }}>
+      <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+      <span>{message}</span>
     </div>
   );
 }
@@ -349,9 +387,16 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
   const [showSearch, setShowSearch] = useState(false);
   const [showEnsemble, setShowEnsemble] = useState(false);
 
-  const hourly = useMemo(() => generateForecast(dashLoc, model, 72), [dashLoc, model]);
-  const timeline = useMemo(() => generateBlendedTimeline(dashLoc), [dashLoc]);
-  const ensemble = useMemo(() => generateEnsemble(dashLoc, model), [dashLoc, model]);
+  const chartState = useAsync(() => fetchForecast(dashLoc, model, MODEL_DAYS[model]), [dashLoc.lat, dashLoc.lon, model]);
+  const timelineState = useAsync(() => fetchBlendedTimeline(dashLoc), [dashLoc.lat, dashLoc.lon]);
+  const ensembleState = showEnsemble
+    ? useAsync(() => fetchEnsemble(dashLoc, model), [dashLoc.lat, dashLoc.lon, model, showEnsemble])
+    : { loading: false, error: null, data: null };
+
+  const hourly = chartState.data || [];
+  const timeline = timelineState.data?.rows || [];
+  const timelineErrors = timelineState.data?.errors || [];
+  const ensemble = ensembleState.data || [];
   const firstDailyIdx = timeline.findIndex((r) => r.phase === 'gfs-daily');
 
   return (
@@ -403,21 +448,25 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
 
       {/* Graphique température / précipitations (modèle sélectionné) */}
       <div style={{ padding: '14px 8px 4px 0', marginLeft: 8 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 500, marginLeft: 8, marginBottom: 2 }}>Courbe {model} (72h)</div>
-        <ResponsiveContainer width="100%" height={190}>
-          <ComposedChart data={hourly.slice(0, 48)} margin={{ top: 4, right: 12, left: -18, bottom: 0 }}>
-            <CartesianGrid stroke={C.border} vertical={false} />
-            <XAxis dataKey="hour" tick={{ fontSize: 9.5, fill: C.muted }} interval={3} tickLine={false} axisLine={{ stroke: C.border2 }} />
-            <YAxis yAxisId="temp" tick={{ fontSize: 9.5, fill: C.muted }} tickLine={false} axisLine={false} width={28} />
-            <YAxis yAxisId="precip" orientation="right" tick={{ fontSize: 9.5, fill: C.muted }} tickLine={false} axisLine={false} width={22} />
-            <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 11, borderRadius: 4 }} labelStyle={{ color: C.muted }} />
-            <Bar yAxisId="precip" dataKey="precip" fill="#2f8fce" opacity={0.45} radius={[2, 2, 0, 0]} />
-            <Line yAxisId="temp" type="monotone" dataKey="temp" stroke={MODEL_INFO[model].color} strokeWidth={2} dot={false} />
-          </ComposedChart>
-        </ResponsiveContainer>
+        <div style={{ fontSize: 12.5, fontWeight: 500, marginLeft: 8, marginBottom: 2 }}>Courbe {model}</div>
+        {chartState.loading && <Loading />}
+        {chartState.error && <ErrorBox message={`${model} : ${chartState.error}`} />}
+        {!chartState.loading && !chartState.error && (
+          <ResponsiveContainer width="100%" height={190}>
+            <ComposedChart data={hourly.slice(0, 48)} margin={{ top: 4, right: 12, left: -18, bottom: 0 }}>
+              <CartesianGrid stroke={C.border} vertical={false} />
+              <XAxis dataKey="hour" tick={{ fontSize: 9.5, fill: C.muted }} interval={3} tickLine={false} axisLine={{ stroke: C.border2 }} />
+              <YAxis yAxisId="temp" tick={{ fontSize: 9.5, fill: C.muted }} tickLine={false} axisLine={false} width={28} />
+              <YAxis yAxisId="precip" orientation="right" tick={{ fontSize: 9.5, fill: C.muted }} tickLine={false} axisLine={false} width={22} />
+              <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 11, borderRadius: 4 }} labelStyle={{ color: C.muted }} />
+              <Bar yAxisId="precip" dataKey="precip" fill="#2f8fce" opacity={0.45} radius={[2, 2, 0, 0]} />
+              <Line yAxisId="temp" type="monotone" dataKey="temp" stroke={MODEL_INFO[model].color} strokeWidth={2} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
       </div>
 
-      {/* Diagramme d'ensemble façon PE-AROME */}
+      {/* Diagramme d'ensemble */}
       <div style={{ margin: '4px 16px 18px', border: `1px solid ${C.border}`, borderRadius: 6, background: C.panel }}>
         <button onClick={() => setShowEnsemble((s) => !s)} style={{
           width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -431,51 +480,58 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
         {showEnsemble && (
           <div style={{ padding: '0 10px 14px' }}>
             <div style={{ fontSize: 11, color: C.muted, padding: '0 4px 8px', lineHeight: 1.4 }}>
-              Run de contrôle, moyenne des scénarios et perturbations de l'ensemble {model} sur 45h. Plus les traces fins divergent, moins la prévision est fiable.
+              Ensemble {ENSEMBLE_API[model]} (Open-Meteo) — le produit PE-AROME de Météo-France n'étant pas
+              disponible gratuitement, ceci est l'équivalent le plus proche. Plus les traces fines divergent,
+              moins la prévision est fiable.
             </div>
-            <div style={{ fontSize: 10.5, color: C.muted, margin: '0 4px 2px' }}>Temp. 850 hPa (°C)</div>
-            <ResponsiveContainer width="100%" height={130}>
-              <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid stroke={C.border} vertical={false} />
-                <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={7} tickLine={false} axisLine={{ stroke: C.border2 }} />
-                <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
-                <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 10.5, borderRadius: 4 }} />
-                {Array.from({ length: 8 }, (_, i) => (
-                  <Line key={i} type="monotone" dataKey={'m850_' + i} stroke={MEMBER_COLORS[i]} strokeWidth={1} dot={false} opacity={0.55} />
-                ))}
-                <Line type="monotone" dataKey="control850" stroke="#1e3a8a" strokeWidth={2.4} dot={false} />
-                <Line type="monotone" dataKey="mean850" stroke="#dc2626" strokeWidth={2.4} dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-            <div style={{ fontSize: 10.5, color: C.muted, margin: '6px 4px 2px' }}>Temp. 500 hPa (°C)</div>
-            <ResponsiveContainer width="100%" height={130}>
-              <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid stroke={C.border} vertical={false} />
-                <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={7} tickLine={false} axisLine={{ stroke: C.border2 }} />
-                <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
-                <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 10.5, borderRadius: 4 }} />
-                {Array.from({ length: 8 }, (_, i) => (
-                  <Line key={i} type="monotone" dataKey={'m500_' + i} stroke={MEMBER_COLORS[i]} strokeWidth={1} dot={false} opacity={0.55} />
-                ))}
-                <Line type="monotone" dataKey="control500" stroke="#1e3a8a" strokeWidth={2.4} dot={false} />
-                <Line type="monotone" dataKey="mean500" stroke="#dc2626" strokeWidth={2.4} dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-            <div style={{ fontSize: 10.5, color: C.muted, margin: '6px 4px 2px' }}>Précipitations — points = risque neige (850hPa &lt; 1°C)</div>
-            <ResponsiveContainer width="100%" height={70}>
-              <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
-                <XAxis dataKey="hour" hide />
-                <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
-                <Bar dataKey="precip" fill="#2f8fce" radius={[2, 2, 0, 0]}>
-                </Bar>
-                <Line type="monotone" dataKey={(d) => (d.snow ? 0.2 : null)} stroke="#7c3aed" strokeWidth={0} dot={{ r: 2.5, fill: '#7c3aed' }} isAnimationActive={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-            <div style={{ display: 'flex', gap: 14, padding: '6px 4px 0', fontSize: 10.5, flexWrap: 'wrap' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 10, height: 2.5, background: '#1e3a8a', display: 'inline-block' }} /> Run de contrôle</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 10, height: 2.5, background: '#dc2626', display: 'inline-block' }} /> Moyenne des scénarios</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#7c3aed', display: 'inline-block' }} /> Risque neige</span>
-            </div>
+            {ensembleState.loading && <Loading />}
+            {ensembleState.error && <ErrorBox message={ensembleState.error} />}
+            {!ensembleState.loading && !ensembleState.error && ensemble.length > 0 && (
+              <>
+                <div style={{ fontSize: 10.5, color: C.muted, margin: '0 4px 2px' }}>Temp. 850 hPa (°C)</div>
+                <ResponsiveContainer width="100%" height={130}>
+                  <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid stroke={C.border} vertical={false} />
+                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={7} tickLine={false} axisLine={{ stroke: C.border2 }} />
+                    <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
+                    <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 10.5, borderRadius: 4 }} />
+                    {Array.from({ length: 8 }, (_, i) => (
+                      <Line key={i} type="monotone" dataKey={'m850_' + i} stroke={MEMBER_COLORS[i]} strokeWidth={1} dot={false} opacity={0.55} connectNulls />
+                    ))}
+                    <Line type="monotone" dataKey="control850" stroke="#1e3a8a" strokeWidth={2.4} dot={false} connectNulls />
+                    <Line type="monotone" dataKey="mean850" stroke="#dc2626" strokeWidth={2.4} dot={false} connectNulls />
+                  </ComposedChart>
+                </ResponsiveContainer>
+                <div style={{ fontSize: 10.5, color: C.muted, margin: '6px 4px 2px' }}>Temp. 500 hPa (°C)</div>
+                <ResponsiveContainer width="100%" height={130}>
+                  <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid stroke={C.border} vertical={false} />
+                    <XAxis dataKey="hour" tick={{ fontSize: 9, fill: C.muted }} interval={7} tickLine={false} axisLine={{ stroke: C.border2 }} />
+                    <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
+                    <Tooltip contentStyle={{ background: '#fff', border: `1px solid ${C.border2}`, fontSize: 10.5, borderRadius: 4 }} />
+                    {Array.from({ length: 8 }, (_, i) => (
+                      <Line key={i} type="monotone" dataKey={'m500_' + i} stroke={MEMBER_COLORS[i]} strokeWidth={1} dot={false} opacity={0.55} connectNulls />
+                    ))}
+                    <Line type="monotone" dataKey="control500" stroke="#1e3a8a" strokeWidth={2.4} dot={false} connectNulls />
+                    <Line type="monotone" dataKey="mean500" stroke="#dc2626" strokeWidth={2.4} dot={false} connectNulls />
+                  </ComposedChart>
+                </ResponsiveContainer>
+                <div style={{ fontSize: 10.5, color: C.muted, margin: '6px 4px 2px' }}>Précipitations — points = risque neige (850hPa &lt; 1°C)</div>
+                <ResponsiveContainer width="100%" height={70}>
+                  <ComposedChart data={ensemble} margin={{ top: 4, right: 10, left: -20, bottom: 0 }}>
+                    <XAxis dataKey="hour" hide />
+                    <YAxis tick={{ fontSize: 9, fill: C.muted }} tickLine={false} axisLine={false} width={24} />
+                    <Bar dataKey="precip" fill="#2f8fce" radius={[2, 2, 0, 0]} />
+                    <Line type="monotone" dataKey={(d) => (d.snow ? 0.2 : null)} stroke="#7c3aed" strokeWidth={0} dot={{ r: 2.5, fill: '#7c3aed' }} isAnimationActive={false} connectNulls={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+                <div style={{ display: 'flex', gap: 14, padding: '6px 4px 0', fontSize: 10.5, flexWrap: 'wrap' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 10, height: 2.5, background: '#1e3a8a', display: 'inline-block' }} /> Run de contrôle</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 10, height: 2.5, background: '#dc2626', display: 'inline-block' }} /> Moyenne des scénarios</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: C.muted }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#7c3aed', display: 'inline-block' }} /> Risque neige</span>
+                </div>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -483,41 +539,49 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
       {/* Frise combinée multi-modèles */}
       <div style={{ padding: '0 16px 4px', fontSize: 13, fontWeight: 600 }}>Prévision détaillée (modèle selon l'échéance)</div>
       <div style={{ padding: '0 16px 6px', fontSize: 11, color: C.muted, lineHeight: 1.4 }}>
-        AROME jusqu'à 42h, puis WRF jusqu'à 84h, puis GFS toutes les 6h au-delà — la colonne « Modèle » indique les changements de source.
+        AROME jusqu'à 42h, puis ICON-EU jusqu'à 84h, puis GFS toutes les 6h au-delà.
       </div>
-      <div style={{ overflowX: 'auto', margin: '4px 16px 24px', border: `1px solid ${C.border}`, borderRadius: 6 }}>
-        <table className="mono" style={{ borderCollapse: 'collapse', width: '100%', minWidth: 720, fontSize: 11 }}>
-          <thead>
-            <tr style={{ background: C.panel }}>
-              <Th>Jour</Th><Th>Heure</Th><Th>Temp.</Th><Th>Vent (dir · moy · raf.)</Th>
-              <Th>Pluie 1h</Th><Th>Humid.</Th><Th>Pression</Th><Th>Temps</Th><Th>Modèle</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {timeline.map((r, i) => (
-              <React.Fragment key={i}>
-                {i === firstDailyIdx && (
-                  <tr><td colSpan={9} style={{ background: '#eef1f5', padding: '6px 10px', color: C.muted, fontSize: 10.5, borderTop: `1px solid ${C.border}` }}>Météo par jour — résolution 6h</td></tr>
-                )}
-                <tr style={{ borderTop: `1px solid ${C.border}`, background: r.model ? '#f2f6fb' : 'transparent' }}>
-                  <Td style={{ fontWeight: r.isNewDay ? 600 : 400 }}>{r.isNewDay ? r.dayLabel : ''}</Td>
-                  <Td>{String(r.hour).padStart(2, '0')}h</Td>
-                  <Td>{r.temp}°C</Td>
-                  <Td>{windDirFull(r.windDir)} · {r.windMoy} · {r.windRaf}</Td>
-                  <Td>{r.precip > 0 ? `${r.precip} mm` : '--'}</Td>
-                  <Td>{r.humidity}%</Td>
-                  <Td>{r.pressure} hPa</Td>
-                  <Td>{weatherText(r.cloud, r.precip)}</Td>
-                  <Td style={{ color: r.model ? MODEL_INFO[r.model].color : C.muted, fontWeight: r.model ? 700 : 400 }}>{r.model || ''}</Td>
-                </tr>
-              </React.Fragment>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {timelineErrors.length > 0 && <ErrorBox message={`Certaines sources ont échoué : ${timelineErrors.join(' · ')}`} />}
+      {timelineState.loading && <Loading label="Chargement de la frise…" />}
+      {!timelineState.loading && timeline.length > 0 && (
+        <div style={{ overflowX: 'auto', margin: '4px 16px 24px', border: `1px solid ${C.border}`, borderRadius: 6 }}>
+          <table className="mono" style={{ borderCollapse: 'collapse', width: '100%', minWidth: 720, fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: C.panel }}>
+                <Th>Jour</Th><Th>Heure</Th><Th>Temp.</Th><Th>Vent (dir · moy · raf.)</Th>
+                <Th>Pluie 1h</Th><Th>Humid.</Th><Th>Pression</Th><Th>Temps</Th><Th>Modèle</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {timeline.map((r, i) => {
+                const { text } = wmoInfo(r.weathercode);
+                return (
+                  <React.Fragment key={i}>
+                    {i === firstDailyIdx && (
+                      <tr><td colSpan={9} style={{ background: '#eef1f5', padding: '6px 10px', color: C.muted, fontSize: 10.5, borderTop: `1px solid ${C.border}` }}>Météo par jour — résolution 6h</td></tr>
+                    )}
+                    <tr style={{ borderTop: `1px solid ${C.border}`, background: r.model ? '#f2f6fb' : 'transparent' }}>
+                      <Td style={{ fontWeight: r.isNewDay ? 600 : 400 }}>{r.isNewDay ? r.dayLabel : ''}</Td>
+                      <Td>{String(r.hour).padStart(2, '0')}h</Td>
+                      <Td>{r.temp}°C</Td>
+                      <Td>{windDirFull(r.windDir)} · {r.windMoy} · {r.windRaf}</Td>
+                      <Td>{r.precip > 0 ? `${r.precip} mm` : '--'}</Td>
+                      <Td>{r.humidity}%</Td>
+                      <Td>{r.pressure} hPa</Td>
+                      <Td>{text}</Td>
+                      <Td style={{ color: r.model ? (MODEL_INFO[r.model]?.color || C.text) : C.muted, fontWeight: r.model ? 700 : 400 }}>{r.model || ''}</Td>
+                    </tr>
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
+const MEMBER_COLORS = ['#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#06b6d4', '#84cc16', '#f43f5e', '#6366f1'];
 function Th({ children }) { return <th style={{ textAlign: 'left', padding: '7px 10px', color: C.muted, fontWeight: 500, fontSize: 10 }}>{children}</th>; }
 function Td({ children, style }) { return <td style={{ padding: '6px 10px', color: C.text, whiteSpace: 'nowrap', ...style }}>{children}</td>; }
 
@@ -527,11 +591,19 @@ function ComparePage({ locations }) {
   const [expandedId, setExpandedId] = useState(null);
   const [expandMode, setExpandMode] = useState('3h');
 
-  const rows = locations.map((loc) => {
-    const f = generateForecast(loc, model, 3)[0];
-    const { Icon } = skyOf(f.cloud, f.precip);
-    return { loc, f, Icon };
-  });
+  const state = useAsync(async () => {
+    const results = await Promise.all(locations.map(async (loc) => {
+      try {
+        const rows = await fetchForecast(loc, model, 2);
+        return { loc, f: rows[0], error: null };
+      } catch (e) {
+        return { loc, f: null, error: e.message };
+      }
+    }));
+    return results;
+  }, [locations.map((l) => l.id).join(','), model]);
+
+  const rows = state.data || [];
 
   return (
     <div>
@@ -547,10 +619,20 @@ function ComparePage({ locations }) {
           }}>{m}</button>
         ))}
       </div>
+      {state.loading && <Loading />}
       <div style={{ margin: '0 16px', border: `1px solid ${C.border}`, borderRadius: 6, overflow: 'hidden' }}>
-        {rows.length === 0 && <div style={{ padding: 20, fontSize: 12.5, color: C.muted }}>Aucune ville suivie pour l'instant — ajoutez-en depuis l'onglet Réglages.</div>}
-        {rows.map(({ loc, f, Icon }, i) => {
+        {!state.loading && rows.length === 0 && <div style={{ padding: 20, fontSize: 12.5, color: C.muted }}>Aucune ville suivie pour l'instant — ajoutez-en depuis l'onglet Réglages.</div>}
+        {rows.map(({ loc, f, error }, i) => {
           const isOpen = expandedId === loc.id;
+          if (error || !f) {
+            return (
+              <div key={loc.id} style={{ borderTop: i === 0 ? 'none' : `1px solid ${C.border}`, padding: '11px 12px' }}>
+                <div style={{ fontSize: 13.5, fontWeight: 500, marginBottom: 4 }}>{loc.name}</div>
+                <ErrorBox message={error || 'Donnée indisponible'} />
+              </div>
+            );
+          }
+          const { Icon } = wmoInfo(f.weathercode);
           return (
             <div key={loc.id} style={{ borderTop: i === 0 ? 'none' : `1px solid ${C.border}` }}>
               <button onClick={() => setExpandedId(isOpen ? null : loc.id)} style={{
@@ -565,7 +647,7 @@ function ComparePage({ locations }) {
                   </div>
                 </div>
                 <Icon size={18} color="#4f8fe8" />
-                <div className="mono" style={{ width: 40, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{f.temp}°</div>
+                <div className="mono" style={{ width: 40, textAlign: 'right', fontSize: 13, fontWeight: 600 }}>{Math.round(f.temp)}°</div>
                 <div className="mono" style={{ width: 52, textAlign: 'right', fontSize: 11, color: '#2f8fce' }}>{f.precip > 0 ? `${f.precip}mm` : '–'}</div>
                 <div className="mono" style={{ width: 62, textAlign: 'right', fontSize: 11, color: C.muted }}>{f.windMoy}km/h {windDirShort(f.windDir)}</div>
               </button>
@@ -579,10 +661,11 @@ function ComparePage({ locations }) {
 }
 
 function ExpandedPreview({ loc, model, mode, setMode }) {
-  const hourly = useMemo(() => generateForecast(loc, model, 24), [loc, model]);
-  const daily = useMemo(() => aggregateDaily(generateForecast(loc, model, 96)), [loc, model]);
+  const state = useAsync(() => fetchForecast(loc, model, 5), [loc.lat, loc.lon, model]);
+  const hourly = state.data || [];
+  const daily = useMemo(() => aggregateDaily(hourly), [hourly]);
   const items = mode === '3h'
-    ? [0, 3, 6, 9].map((h) => hourly[h])
+    ? [0, 3, 6, 9].map((h) => hourly[h]).filter(Boolean)
     : daily.slice(0, 3);
 
   return (
@@ -595,35 +678,39 @@ function ExpandedPreview({ loc, model, mode, setMode }) {
           }}>{label}</button>
         ))}
       </div>
-      <div style={{ display: 'flex', gap: 8, overflowX: 'auto' }}>
-        {items.map((it, i) => {
-          if (mode === '3h') {
-            const { Icon } = skyOf(it.cloud, it.precip);
+      {state.loading && <Loading />}
+      {state.error && <ErrorBox message={state.error} />}
+      {!state.loading && !state.error && (
+        <div style={{ display: 'flex', gap: 8, overflowX: 'auto' }}>
+          {items.map((it, i) => {
+            if (mode === '3h') {
+              const { Icon } = wmoInfo(it.weathercode);
+              return (
+                <div key={i} style={{ flex: '0 0 auto', minWidth: 68, border: `1px solid ${C.border}`, borderRadius: 6, padding: '8px 6px', textAlign: 'center', background: '#fff' }}>
+                  <div className="mono" style={{ fontSize: 10.5, color: C.muted }}>{String(it.hour).padStart(2, '0')}h</div>
+                  <Icon size={16} color="#4f8fe8" style={{ margin: '4px auto' }} />
+                  <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{Math.round(it.temp)}°</div>
+                  <div className="mono" style={{ fontSize: 9.5, color: '#2f8fce' }}>{it.precip > 0 ? `${it.precip}mm` : '–'}</div>
+                </div>
+              );
+            }
+            const { Icon } = wmoInfo(it.weathercode);
             return (
-              <div key={i} style={{ flex: '0 0 auto', minWidth: 68, border: `1px solid ${C.border}`, borderRadius: 6, padding: '8px 6px', textAlign: 'center', background: '#fff' }}>
-                <div className="mono" style={{ fontSize: 10.5, color: C.muted }}>{String(it.hour).padStart(2, '0')}h</div>
+              <div key={i} style={{ flex: '0 0 auto', minWidth: 78, border: `1px solid ${C.border}`, borderRadius: 6, padding: '8px 6px', textAlign: 'center', background: '#fff' }}>
+                <div className="mono" style={{ fontSize: 10.5, color: C.muted }}>{it.dayLabel}</div>
                 <Icon size={16} color="#4f8fe8" style={{ margin: '4px auto' }} />
-                <div className="mono" style={{ fontSize: 13, fontWeight: 600 }}>{it.temp}°</div>
+                <div className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{it.tmin}° / {it.tmax}°</div>
                 <div className="mono" style={{ fontSize: 9.5, color: '#2f8fce' }}>{it.precip > 0 ? `${it.precip}mm` : '–'}</div>
               </div>
             );
-          }
-          const { Icon } = skyOf(it.cloud, it.precip > 0 ? 1 : 0);
-          return (
-            <div key={i} style={{ flex: '0 0 auto', minWidth: 78, border: `1px solid ${C.border}`, borderRadius: 6, padding: '8px 6px', textAlign: 'center', background: '#fff' }}>
-              <div className="mono" style={{ fontSize: 10.5, color: C.muted }}>{it.dayLabel}</div>
-              <Icon size={16} color="#4f8fe8" style={{ margin: '4px auto' }} />
-              <div className="mono" style={{ fontSize: 12.5, fontWeight: 600 }}>{it.tmin}° / {it.tmax}°</div>
-              <div className="mono" style={{ fontSize: 9.5, color: '#2f8fce' }}>{it.precip > 0 ? `${it.precip}mm` : '–'}</div>
-            </div>
-          );
-        })}
-      </div>
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
-/* ---------------- Page Radar ---------------- */
+/* ---------------- Page Radar (reste schématique) ---------------- */
 function RadarPage({ locations }) {
   const [model, setModel] = useState('AROME');
   const [hourAhead, setHourAhead] = useState(0);
@@ -664,7 +751,7 @@ function RadarPage({ locations }) {
     <div>
       <div style={{ padding: '16px 16px 8px' }}>
         <div style={{ fontSize: 20, fontWeight: 600 }}>Radar précipitations</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Estimation schématique — pas une image radar réelle</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Estimation schématique — pas une vraie image radar (nécessite une autre source de données)</div>
       </div>
       <div style={{ display: 'flex', gap: 6, padding: '4px 16px 10px' }}>
         {MODELS.map((m) => (
@@ -759,7 +846,7 @@ function SettingsPage({ locations, setLocations }) {
       </div>
 
       <div style={{ margin: '0 16px 24px', border: `1px solid ${C.border}`, borderRadius: 6, padding: 12 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 8 }}>À propos des modèles</div>
+        <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 8 }}>À propos des modèles (données Open-Meteo)</div>
         {MODELS.map((m) => (
           <div key={m} style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: MODEL_INFO[m].color, marginTop: 4, flexShrink: 0 }} />
