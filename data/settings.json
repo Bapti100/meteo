@@ -5,7 +5,7 @@
       "name": "Strasbourg",
       "lat": 48.58,
       "lon": 7.75,
-      "main": true
+      "main": false
     },
     {
       "name": "Thônes",
@@ -26,7 +26,7 @@
       "lat": 45.8263735,
       "lon": 6.2863878,
       "id": "la-tournette-1788946519428",
-      "main": false
+      "main": true
     }
   ]
 }
