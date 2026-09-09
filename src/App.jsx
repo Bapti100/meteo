@@ -2,12 +2,13 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Sun, Cloud, CloudRain, CloudDrizzle, CloudSnow, CloudFog, CloudLightning,
   Search, Settings as SettingsIcon, Map as MapIcon, Table as TableIcon,
-  Home, Plus, Trash2, Star, ChevronRight, ChevronDown, Play, Pause, Info, AlertTriangle
+  Home, Plus, Trash2, Star, ChevronRight, ChevronDown, Play, Pause, Info, AlertTriangle, Lock
 } from 'lucide-react';
 import {
   ResponsiveContainer, ComposedChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip, Bar
 } from 'recharts';
+import { fetchSettings, saveSettings, githubConfigured, checkPassword, passwordConfigured } from './githubStore';
 
 /* ============================================================
    DONNÉES RÉELLES — API Open-Meteo (gratuite, sans clé, CORS ok)
@@ -289,15 +290,52 @@ function useAsync(fn, deps) {
 
 const C = { bg: '#ffffff', panel: '#f6f7f9', border: '#e3e6ea', border2: '#d7dbe1', text: '#1a1f26', muted: '#6b7280' };
 
+const DEFAULT_LOCATIONS = [
+  { id: 'strasbourg', name: 'Strasbourg', lat: 48.58, lon: 7.75, main: true },
+  { id: 'annecy', name: 'Annecy', lat: 45.90, lon: 6.13, main: false },
+  { id: 'chamonix', name: 'Chamonix', lat: 45.92, lon: 6.87, main: false },
+];
+
 export default function App() {
-  const [locations, setLocations] = useState([
-    { id: 'strasbourg', name: 'Strasbourg', lat: 48.58, lon: 7.75, main: true },
-    { id: 'annecy', name: 'Annecy', lat: 45.90, lon: 6.13, main: false },
-    { id: 'chamonix', name: 'Chamonix', lat: 45.92, lon: 6.87, main: false },
-  ]);
+  const [locations, setLocationsState] = useState(DEFAULT_LOCATIONS);
   const [view, setView] = useState('dashboard');
   const mainLoc = locations.find((l) => l.main) || locations[0];
   const [dashLoc, setDashLoc] = useState(mainLoc);
+  const [unlocked, setUnlocked] = useState(() => localStorage.getItem('meteo_unlocked') === '1');
+  const [syncStatus, setSyncStatus] = useState({ state: 'idle', message: '' }); // idle | loading | saving | ok | error
+  const loadedRef = useRef(false);
+
+  // Chargement initial des villes sauvegardées sur GitHub
+  useEffect(() => {
+    let cancelled = false;
+    if (!githubConfigured()) { loadedRef.current = true; return; }
+    setSyncStatus({ state: 'loading', message: 'Chargement des réglages…' });
+    fetchSettings()
+      .then((data) => {
+        if (cancelled) return;
+        if (data && Array.isArray(data.locations) && data.locations.length > 0) setLocationsState(data.locations);
+        setSyncStatus({ state: 'ok', message: 'Synchronisé' });
+      })
+      .catch((e) => { if (!cancelled) setSyncStatus({ state: 'error', message: e.message }); })
+      .finally(() => { loadedRef.current = true; });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Sauvegarde sur GitHub à chaque changement (uniquement après déverrouillage et chargement initial)
+  function setLocations(next) {
+    setLocationsState(next);
+    if (!unlocked || !loadedRef.current || !githubConfigured()) return;
+    setSyncStatus({ state: 'saving', message: 'Sauvegarde…' });
+    saveSettings({ locations: next })
+      .then(() => setSyncStatus({ state: 'ok', message: 'Sauvegardé sur GitHub' }))
+      .catch((e) => setSyncStatus({ state: 'error', message: e.message }));
+  }
+
+  function handleUnlock(pwd) {
+    if (checkPassword(pwd)) { setUnlocked(true); localStorage.setItem('meteo_unlocked', '1'); return true; }
+    return false;
+  }
+  function handleLock() { setUnlocked(false); localStorage.removeItem('meteo_unlocked'); }
 
   useEffect(() => { setDashLoc(mainLoc); }, [mainLoc?.id]);
 
@@ -325,7 +363,13 @@ export default function App() {
           )}
           {view === 'compare' && <ComparePage locations={locations} />}
           {view === 'radar' && <RadarPage locations={locations} />}
-          {view === 'settings' && <SettingsPage locations={locations} setLocations={setLocations} />}
+          {view === 'settings' && (
+            <SettingsPage
+              locations={locations} setLocations={setLocations}
+              unlocked={unlocked} onUnlock={handleUnlock} onLock={handleLock}
+              syncStatus={syncStatus}
+            />
+          )}
         </div>
         <BottomNav view={view} setView={setView} />
       </div>
@@ -378,13 +422,37 @@ function BottomNav({ view, setView }) {
 }
 
 /* ---------------- Recherche de ville ---------------- */
+// Recherche en direct via la BAN (Base Adresse Nationale, data.gouv.fr — gratuite, sans clé)
+async function searchBAN(query) {
+  if (query.trim().length < 2) return [];
+  const url = `https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(query)}&type=municipality&limit=6`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const json = await res.json();
+  return (json.features || []).map((f) => ({
+    name: f.properties.city || f.properties.label,
+    lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0],
+  }));
+}
+
 function CitySearch({ onPick, placeholder }) {
   const [q, setQ] = useState('');
-  const [lat, setLat] = useState(''); const [lon, setLon] = useState('');
+  const [lat, setLat] = useState(''); const [lon, setLon] = useState(''); const [customName, setCustomName] = useState('');
   const [mode, setMode] = useState('ville');
-  const results = q.length > 0
-    ? CITY_DB.filter((c) => c.name.toLowerCase().includes(q.toLowerCase())).slice(0, 6)
-    : [];
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    if (mode !== 'ville' || q.trim().length < 2) { setResults([]); return; }
+    let cancelled = false;
+    setSearching(true);
+    const t = setTimeout(() => {
+      searchBAN(q).then((r) => { if (!cancelled) { setResults(r); setSearching(false); } })
+        .catch(() => { if (!cancelled) setSearching(false); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q, mode]);
+
   return (
     <div style={{ background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, padding: 10 }}>
       <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
@@ -399,13 +467,14 @@ function CitySearch({ onPick, placeholder }) {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, border: `1px solid ${C.border2}`, borderRadius: 4, padding: '6px 8px', background: '#fff' }}>
             <Search size={14} color={C.muted} />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={placeholder || 'Rechercher une ville…'}
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={placeholder || 'Rechercher une ville de France…'}
               style={{ background: 'none', border: 'none', outline: 'none', color: C.text, fontSize: 13, width: '100%' }} />
           </div>
+          {searching && <div style={{ fontSize: 11, color: C.muted, padding: '6px 4px 0' }}>Recherche…</div>}
           {results.length > 0 && (
             <div style={{ marginTop: 6 }}>
-              {results.map((c) => (
-                <button key={c.name} onClick={() => { onPick(c); setQ(''); }} style={{
+              {results.map((c, i) => (
+                <button key={c.name + i} onClick={() => { onPick(c); setQ(''); setResults([]); }} style={{
                   display: 'flex', width: '100%', justifyContent: 'space-between', alignItems: 'center',
                   background: 'none', border: 'none', borderTop: `1px solid ${C.border}`, color: C.text,
                   padding: '7px 4px', fontSize: 13, cursor: 'pointer', textAlign: 'left',
@@ -417,15 +486,22 @@ function CitySearch({ onPick, placeholder }) {
           )}
         </div>
       ) : (
-        <div style={{ display: 'flex', gap: 6 }}>
-          <input value={lat} onChange={(e) => setLat(e.target.value)} placeholder="Latitude" className="mono"
-            style={{ flex: 1, background: '#fff', border: `1px solid ${C.border2}`, borderRadius: 4, padding: '6px 8px', color: C.text, fontSize: 12.5 }} />
-          <input value={lon} onChange={(e) => setLon(e.target.value)} placeholder="Longitude" className="mono"
-            style={{ flex: 1, background: '#fff', border: `1px solid ${C.border2}`, borderRadius: 4, padding: '6px 8px', color: C.text, fontSize: 12.5 }} />
-          <button onClick={() => {
-            const la = parseFloat(lat), lo = parseFloat(lon);
-            if (!isNaN(la) && !isNaN(lo)) { onPick({ name: `${la.toFixed(2)}, ${lo.toFixed(2)}`, lat: la, lon: lo }); setLat(''); setLon(''); }
-          }} style={{ background: '#e9edf3', border: `1px solid ${C.border2}`, borderRadius: 4, padding: '0 12px', color: C.text, fontSize: 12.5, cursor: 'pointer' }}>OK</button>
+        <div>
+          <input value={customName} onChange={(e) => setCustomName(e.target.value)} placeholder="Nom du lieu (optionnel — ex : Sélestat)"
+            style={{ width: '100%', background: '#fff', border: `1px solid ${C.border2}`, borderRadius: 4, padding: '6px 8px', color: C.text, fontSize: 12.5, marginBottom: 6 }} />
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input value={lat} onChange={(e) => setLat(e.target.value)} placeholder="Latitude" className="mono"
+              style={{ flex: 1, background: '#fff', border: `1px solid ${C.border2}`, borderRadius: 4, padding: '6px 8px', color: C.text, fontSize: 12.5 }} />
+            <input value={lon} onChange={(e) => setLon(e.target.value)} placeholder="Longitude" className="mono"
+              style={{ flex: 1, background: '#fff', border: `1px solid ${C.border2}`, borderRadius: 4, padding: '6px 8px', color: C.text, fontSize: 12.5 }} />
+            <button onClick={() => {
+              const la = parseFloat(lat), lo = parseFloat(lon);
+              if (!isNaN(la) && !isNaN(lo)) {
+                onPick({ name: customName.trim() || `${la.toFixed(2)}, ${lo.toFixed(2)}`, lat: la, lon: lo });
+                setLat(''); setLon(''); setCustomName('');
+              }
+            }} style={{ background: '#e9edf3', border: `1px solid ${C.border2}`, borderRadius: 4, padding: '0 12px', color: C.text, fontSize: 12.5, cursor: 'pointer' }}>OK</button>
+          </div>
         </div>
       )}
     </div>
@@ -977,13 +1053,60 @@ function RadarPage({ locations }) {
 }
 
 /* ---------------- Page Réglages ---------------- */
-function SettingsPage({ locations, setLocations }) {
+function SyncBadge({ syncStatus }) {
+  const colors = { idle: C.muted, loading: '#2f6fd1', saving: '#e8a83f', ok: '#1f9d6b', error: '#c23b56' };
+  if (syncStatus.state === 'idle') return null;
+  return (
+    <div style={{ fontSize: 11, color: colors[syncStatus.state], marginTop: 4 }}>{syncStatus.message}</div>
+  );
+}
+
+function SettingsPage({ locations, setLocations, unlocked, onUnlock, onLock, syncStatus }) {
+  const [pwd, setPwd] = useState('');
+  const [pwdError, setPwdError] = useState(false);
+
   return (
     <div>
       <div style={{ padding: '16px 16px 8px' }}>
         <div style={{ fontSize: 20, fontWeight: 600 }}>Réglages</div>
         <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Gérez les villes suivies et la ville principale</div>
+        <SyncBadge syncStatus={syncStatus} />
       </div>
+
+      {!githubConfigured() && (
+        <ErrorBox message="Sauvegarde GitHub non configurée (VITE_GH_OWNER / VITE_GH_REPO / VITE_GH_TOKEN manquants) — les modifications resteront locales à ce navigateur. Voir le README." />
+      )}
+
+      {!unlocked ? (
+        <div style={{ margin: '4px 16px 20px', border: `1px solid ${C.border}`, borderRadius: 6, padding: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <Lock size={16} color={C.muted} />
+            <div style={{ fontSize: 13.5, fontWeight: 500 }}>Réglages verrouillés</div>
+          </div>
+          <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 10, lineHeight: 1.4 }}>
+            Entre le mot de passe pour modifier les villes suivies. Ce mot de passe n'est pas une vraie
+            sécurité (le code du site est public) — il sert juste à éviter les modifications accidentelles.
+          </div>
+          {!passwordConfigured() && (
+            <ErrorBox message="VITE_APP_PASSWORD n'est pas configuré — le déverrouillage est désactivé." />
+          )}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input type="password" value={pwd} onChange={(e) => { setPwd(e.target.value); setPwdError(false); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { if (!onUnlock(pwd)) setPwdError(true); else setPwd(''); } }}
+              placeholder="Mot de passe" style={{ flex: 1, background: '#fff', border: `1px solid ${pwdError ? '#c23b56' : C.border2}`, borderRadius: 4, padding: '7px 8px', color: C.text, fontSize: 13 }} />
+            <button onClick={() => { if (!onUnlock(pwd)) setPwdError(true); else setPwd(''); }} style={{
+              background: '#e9edf3', border: `1px solid ${C.border2}`, borderRadius: 4, padding: '0 14px', color: C.text, fontSize: 13, cursor: 'pointer',
+            }}>Déverrouiller</button>
+          </div>
+          {pwdError && <div style={{ fontSize: 11, color: '#c23b56', marginTop: 6 }}>Mot de passe incorrect.</div>}
+        </div>
+      ) : (
+        <div style={{ margin: '4px 16px 4px', display: 'flex', justifyContent: 'flex-end' }}>
+          <button onClick={onLock} style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'none', border: 'none', color: C.muted, fontSize: 11.5, cursor: 'pointer' }}>
+            <Lock size={12} /> Reverrouiller
+          </button>
+        </div>
+      )}
 
       <div style={{ margin: '4px 16px 16px', border: `1px solid ${C.border}`, borderRadius: 6, overflow: 'hidden' }}>
         {locations.map((loc, i) => (
@@ -991,32 +1114,36 @@ function SettingsPage({ locations, setLocations }) {
             display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px',
             borderTop: i === 0 ? 'none' : `1px solid ${C.border}`,
           }}>
-            <button onClick={() => setLocations(locations.map((l) => ({ ...l, main: l.id === loc.id })))} title="Définir comme ville principale"
-              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2 }}>
+            <button onClick={() => unlocked && setLocations(locations.map((l) => ({ ...l, main: l.id === loc.id })))} title="Définir comme ville principale" disabled={!unlocked}
+              style={{ background: 'none', border: 'none', cursor: unlocked ? 'pointer' : 'default', padding: 2, opacity: unlocked ? 1 : 0.6 }}>
               <Star size={16} fill={loc.main ? '#e8a83f' : 'none'} color={loc.main ? '#e8a83f' : C.muted} />
             </button>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 13.5 }}>{loc.name}</div>
               <div className="mono" style={{ fontSize: 10.5, color: C.muted }}>{loc.lat.toFixed(2)}°, {loc.lon.toFixed(2)}°</div>
             </div>
-            <button onClick={() => setLocations(locations.filter((l) => l.id !== loc.id))} style={{
-              background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: 4,
-            }}><Trash2 size={15} /></button>
+            {unlocked && (
+              <button onClick={() => setLocations(locations.filter((l) => l.id !== loc.id))} style={{
+                background: 'none', border: 'none', color: C.muted, cursor: 'pointer', padding: 4,
+              }}><Trash2 size={15} /></button>
+            )}
           </div>
         ))}
         {locations.length === 0 && <div style={{ padding: 16, fontSize: 12.5, color: C.muted }}>Aucune ville pour l'instant.</div>}
       </div>
 
-      <div style={{ margin: '0 16px 20px' }}>
-        <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 8 }}>Ajouter une ville</div>
-        <CitySearch
-          placeholder="Nom de ville…"
-          onPick={(c) => {
-            if (locations.some((l) => l.name === c.name)) return;
-            setLocations([...locations, { ...c, id: c.name.toLowerCase().replace(/\s+/g, '-'), main: locations.length === 0 }]);
-          }}
-        />
-      </div>
+      {unlocked && (
+        <div style={{ margin: '0 16px 20px' }}>
+          <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 8 }}>Ajouter une ville</div>
+          <CitySearch
+            placeholder="Nom de ville…"
+            onPick={(c) => {
+              if (locations.some((l) => l.name === c.name)) return;
+              setLocations([...locations, { ...c, id: c.name.toLowerCase().replace(/\s+/g, '-') + '-' + Date.now(), main: locations.length === 0 }]);
+            }}
+          />
+        </div>
+      )}
 
       <div style={{ margin: '0 16px 24px', border: `1px solid ${C.border}`, borderRadius: 6, padding: 12 }}>
         <div style={{ fontSize: 12.5, fontWeight: 500, marginBottom: 8 }}>À propos des modèles (données Open-Meteo)</div>
