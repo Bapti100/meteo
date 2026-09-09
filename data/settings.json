@@ -5,7 +5,7 @@
       "name": "Strasbourg",
       "lat": 48.58,
       "lon": 7.75,
-      "main": false
+      "main": true
     },
     {
       "name": "Thônes",
@@ -19,7 +19,7 @@
       "lat": 48.917656,
       "lon": 2.533775,
       "id": "livry-gargan-1788944479204",
-      "main": true
+      "main": false
     }
   ]
 }
