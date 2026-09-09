@@ -1,7 +1,32 @@
 {
   "locations": [
-    { "id": "strasbourg", "name": "Strasbourg", "lat": 48.58, "lon": 7.75, "main": true },
-    { "id": "annecy", "name": "Annecy", "lat": 45.90, "lon": 6.13, "main": false },
-    { "id": "chamonix", "name": "Chamonix", "lat": 45.92, "lon": 6.87, "main": false }
+    {
+      "id": "strasbourg",
+      "name": "Strasbourg",
+      "lat": 48.58,
+      "lon": 7.75,
+      "main": true
+    },
+    {
+      "id": "annecy",
+      "name": "Annecy",
+      "lat": 45.9,
+      "lon": 6.13,
+      "main": false
+    },
+    {
+      "id": "chamonix",
+      "name": "Chamonix",
+      "lat": 45.92,
+      "lon": 6.87,
+      "main": false
+    },
+    {
+      "name": "Livry-Gargan",
+      "lat": 48.917656,
+      "lon": 2.533775,
+      "id": "livry-gargan-1788944462564",
+      "main": false
+    }
   ]
 }
