@@ -1033,6 +1033,7 @@ function RadarPage({ locations }) {
         </svg>
       </div>
 
+      
       <div style={{ margin: '10px 16px 4px', display: 'flex', alignItems: 'center', gap: 10 }}>
         <button onClick={() => setPlaying((p) => !p)} style={{
           background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 8, color: C.text, cursor: 'pointer',
