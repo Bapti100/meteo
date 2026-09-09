@@ -12,14 +12,14 @@
       "lat": 45.883413,
       "lon": 6.323024,
       "id": "thônes-1788944473553",
-      "main": false
+      "main": true
     },
     {
       "name": "Livry-Gargan",
       "lat": 48.917656,
       "lon": 2.533775,
       "id": "livry-gargan-1788944479204",
-      "main": true
+      "main": false
     }
   ]
 }
