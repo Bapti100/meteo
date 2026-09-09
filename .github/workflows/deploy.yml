@@ -32,6 +32,11 @@ jobs:
 
       - name: Construire le site
         run: npm run build
+        env:
+          VITE_GH_OWNER: ${{ secrets.GH_OWNER }}
+          VITE_GH_REPO: ${{ secrets.GH_REPO }}
+          VITE_GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          VITE_APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
 
       - name: Préparer l'artefact Pages
         uses: actions/upload-pages-artifact@v3
