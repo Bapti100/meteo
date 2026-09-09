@@ -20,6 +20,13 @@
       "lon": 2.533775,
       "id": "livry-gargan-1788944479204",
       "main": false
+    },
+    {
+      "name": "La tournette",
+      "lat": 45.8263735,
+      "lon": 6.2863878,
+      "id": "la-tournette-1788946519428",
+      "main": false
     }
   ]
 }
