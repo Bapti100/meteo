@@ -1075,7 +1075,7 @@ function RadarPage({ locations, mainLoc }) {
       <div style={{ padding: '16px 16px 8px' }}>
         <div style={{ fontSize: 20, fontWeight: 600 }}>Radar précipitations</div>
         <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
-          Radar réel (RainViewer) — historique 2h + prévision (nowcast) 30 min. Centré sur {mainLoc?.name || '…'}, ~50 km de large.
+          Radar réel (RainViewer) — historique 2h + prévision (nowcast) 30 min. Centré sur {mainLoc?.name || '…'}, ~250 km de large.
         </div>
       </div>
 
