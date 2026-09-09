@@ -1002,7 +1002,7 @@ function RadarPage({ locations, mainLoc }) {
   // 2) Centrer sur la ville principale avec une largeur d'environ 50 km
   useEffect(() => {
     if (!ready || !mapRef.current || !mainLoc) return;
-    const km = 25; // demi-largeur -> ~50 km de large au total
+    const km = 125; // demi-largeur -> ~250 km de large au total
     const dLat = km / 111;
     const dLon = km / (111 * Math.cos((mainLoc.lat * Math.PI) / 180));
     mapRef.current.fitBounds(
