@@ -9,6 +9,8 @@ import {
   CartesianGrid, Tooltip, Bar
 } from 'recharts';
 import { fetchSettings, saveSettings, githubConfigured, checkPassword, passwordConfigured } from './githubStore';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 
 /* ============================================================
    DONNÉES RÉELLES — API Open-Meteo (gratuite, sans clé, CORS ok)
@@ -362,7 +364,7 @@ export default function App() {
             />
           )}
           {view === 'compare' && <ComparePage locations={locations} />}
-          {view === 'radar' && <RadarPage locations={locations} />}
+          {view === 'radar' && <RadarPage locations={locations} mainLoc={mainLoc} />}
           {view === 'settings' && (
             <SettingsPage
               locations={locations} setLocations={setLocations}
@@ -960,94 +962,145 @@ function ExpandedPreview({ loc, model, mode, setMode }) {
 }
 
 /* ---------------- Page Radar (reste schématique) ---------------- */
-function RadarPage({ locations }) {
-  const [model, setModel] = useState('AROME');
-  const [hourAhead, setHourAhead] = useState(0);
+function RadarPage({ locations, mainLoc }) {
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const [ready, setReady] = useState(false);
+  const [loadError, setLoadError] = useState(null);
+  const [frames, setFrames] = useState([]); // [{ time, path, isForecast }]
+  const [frameIdx, setFrameIdx] = useState(0);
+  const [host, setHost] = useState('');
   const [playing, setPlaying] = useState(false);
   const timerRef = useRef(null);
 
+  // 1) Créer la carte MapLibre une seule fois
   useEffect(() => {
-    if (playing) {
-      timerRef.current = setInterval(() => setHourAhead((h) => (h >= 24 ? 0 : h + 1)), 700);
+    if (!mapContainerRef.current || mapRef.current) return;
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current,
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: 'raster',
+            tiles: ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png', 'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png', 'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            tileSize: 256,
+            attribution: '© OpenStreetMap contributors',
+          },
+        },
+        layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
+      },
+      attributionControl: false,
+    });
+    map.addControl(new maplibregl.AttributionControl({ compact: true }));
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+    map.on('load', () => setReady(true));
+    mapRef.current = map;
+    return () => { map.remove(); mapRef.current = null; };
+  }, []);
+
+  // 2) Centrer sur la ville principale avec une largeur d'environ 50 km
+  useEffect(() => {
+    if (!ready || !mapRef.current || !mainLoc) return;
+    const km = 25; // demi-largeur -> ~50 km de large au total
+    const dLat = km / 111;
+    const dLon = km / (111 * Math.cos((mainLoc.lat * Math.PI) / 180));
+    mapRef.current.fitBounds(
+      [[mainLoc.lon - dLon, mainLoc.lat - dLat], [mainLoc.lon + dLon, mainLoc.lat + dLat]],
+      { padding: 20, animate: false }
+    );
+  }, [ready, mainLoc?.lat, mainLoc?.lon]);
+
+  // 3) Marqueurs des villes suivies
+  useEffect(() => {
+    if (!ready || !mapRef.current) return;
+    const markers = locations.map((loc) => {
+      const el = document.createElement('div');
+      el.style.width = '10px'; el.style.height = '10px'; el.style.borderRadius = '50%';
+      el.style.background = loc.main ? '#e8a83f' : '#1a1f26';
+      el.style.border = '2px solid #fff'; el.style.boxShadow = '0 0 2px rgba(0,0,0,.4)';
+      return new maplibregl.Marker({ element: el })
+        .setLngLat([loc.lon, loc.lat])
+        .setPopup(new maplibregl.Popup({ offset: 10, closeButton: false }).setText(loc.name))
+        .addTo(mapRef.current);
+    });
+    return () => markers.forEach((m) => m.remove());
+  }, [ready, locations]);
+
+  // 4) Récupérer les frames radar RainViewer (gratuit, sans clé)
+  useEffect(() => {
+    let cancelled = false;
+    fetch('https://api.rainviewer.com/public/weather-maps.json')
+      .then((r) => r.json())
+      .then((json) => {
+        if (cancelled) return;
+        const past = (json.radar?.past || []).map((f) => ({ ...f, isForecast: false }));
+        const nowcast = (json.radar?.nowcast || []).map((f) => ({ ...f, isForecast: true }));
+        setHost(json.host);
+        setFrames([...past, ...nowcast]);
+        setFrameIdx(Math.max(0, past.length - 1)); // frame la plus récente observée = "maintenant"
+      })
+      .catch((e) => { if (!cancelled) setLoadError(e.message || 'Radar indisponible'); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // 5) Afficher la frame courante sur la carte
+  useEffect(() => {
+    if (!ready || !mapRef.current || !host || frames.length === 0) return;
+    const map = mapRef.current;
+    const frame = frames[frameIdx];
+    if (!frame) return;
+    const url = `${host}${frame.path}/256/{z}/{x}/{y}/2/1_1.png`;
+    if (map.getLayer('radar-layer')) map.removeLayer('radar-layer');
+    if (map.getSource('radar-src')) map.removeSource('radar-src');
+    map.addSource('radar-src', { type: 'raster', tiles: [url], tileSize: 256 });
+    map.addLayer({ id: 'radar-layer', type: 'raster', source: 'radar-src', paint: { 'raster-opacity': 0.75 } });
+  }, [ready, host, frames, frameIdx]);
+
+  // 6) Lecture automatique
+  useEffect(() => {
+    if (playing && frames.length > 0) {
+      timerRef.current = setInterval(() => setFrameIdx((i) => (i + 1) % frames.length), 800);
     } else clearInterval(timerRef.current);
     return () => clearInterval(timerRef.current);
-  }, [playing]);
+  }, [playing, frames.length]);
 
-  const bbox = { latMin: 42.3, latMax: 51.1, lonMin: -4.8, lonMax: 8.2 };
-  const grid = useMemo(() => {
-    const pts = [];
-    const cols = 14, rowsN = 14;
-    for (let i = 0; i < cols; i++) {
-      for (let j = 0; j < rowsN; j++) {
-        const lat = bbox.latMax - (i / cols) * (bbox.latMax - bbox.latMin);
-        const lon = bbox.lonMin + (j / rowsN) * (bbox.lonMax - bbox.lonMin);
-        const rand = mulberry32(hashSeed(`${i}-${j}-${model}-${hourAhead}`));
-        const cellNoise = Math.sin(i * 0.9 + hourAhead * 0.35) * Math.cos(j * 0.7 - hourAhead * 0.25);
-        const intensity = Math.max(0, (cellNoise + (rand() - 0.5) * 0.6));
-        pts.push({ lat, lon, intensity });
-      }
-    }
-    return pts;
-  }, [model, hourAhead]);
-
-  const project = (lat, lon) => ({
-    x: ((lon - bbox.lonMin) / (bbox.lonMax - bbox.lonMin)) * 320,
-    y: ((bbox.latMax - lat) / (bbox.latMax - bbox.latMin)) * 340,
-  });
-  const targetTime = new Date(Date.now() + hourAhead * 3600 * 1000);
+  const currentFrame = frames[frameIdx];
+  const frameLabel = currentFrame
+    ? new Date(currentFrame.time * 1000).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' })
+    : '';
 
   return (
     <div>
       <div style={{ padding: '16px 16px 8px' }}>
         <div style={{ fontSize: 20, fontWeight: 600 }}>Radar précipitations</div>
-        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Estimation schématique — pas une vraie image radar (nécessite une autre source de données)</div>
-      </div>
-      <div style={{ display: 'flex', gap: 6, padding: '4px 16px 10px' }}>
-        {MODELS.map((m) => (
-          <button key={m} onClick={() => setModel(m)} style={{
-            fontSize: 12, padding: '5px 12px', borderRadius: 20, border: `1px solid ${model === m ? MODEL_INFO[m].color : C.border2}`,
-            background: model === m ? '#eef3fb' : 'transparent', color: model === m ? C.text : C.muted, cursor: 'pointer',
-          }}>{m}</button>
-        ))}
-      </div>
-
-      <div style={{ margin: '0 16px', border: `1px solid ${C.border}`, borderRadius: 6, background: '#eef1f4', overflow: 'hidden' }}>
-        <svg viewBox="0 0 320 340" width="100%" style={{ display: 'block' }}>
-          {grid.map((p, i) => {
-            const { x, y } = project(p.lat, p.lon);
-            if (p.intensity <= 0.05) return null;
-            const alpha = Math.min(0.85, p.intensity);
-            const color = p.intensity > 0.6 ? `rgba(193,45,75,${alpha})` : p.intensity > 0.3 ? `rgba(47,143,206,${alpha})` : `rgba(79,143,232,${alpha * 0.7})`;
-            return <rect key={i} x={x - 11} y={y - 11} width={23} height={23} fill={color} rx={3} />;
-          })}
-          {locations.map((loc) => {
-            const { x, y } = project(loc.lat, loc.lon);
-            if (x < 0 || x > 320 || y < 0 || y > 340) return null;
-            return (
-              <g key={loc.id}>
-                <circle cx={x} cy={y} r={3.5} fill="#1a1f26" stroke="#fff" strokeWidth={1.5} />
-                <text x={x + 6} y={y + 3} fontSize="9" fill="#1a1f26" fontFamily="'JetBrains Mono', monospace">{loc.name}</text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-
-      
-      <div style={{ margin: '10px 16px 4px', display: 'flex', alignItems: 'center', gap: 10 }}>
-        <button onClick={() => setPlaying((p) => !p)} style={{
-          background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 8, color: C.text, cursor: 'pointer',
-        }}>{playing ? <Pause size={15} /> : <Play size={15} />}</button>
-        <input type="range" min={0} max={24} value={hourAhead} onChange={(e) => { setPlaying(false); setHourAhead(parseInt(e.target.value)); }}
-          style={{ flex: 1, accentColor: MODEL_INFO[model].color }} />
-        <div className="mono" style={{ fontSize: 11.5, color: C.muted, width: 96, textAlign: 'right' }}>
-          {targetTime.toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
+          Radar réel (RainViewer) — historique 2h + prévision (nowcast) 30 min. Centré sur {mainLoc?.name || '…'}, ~50 km de large.
         </div>
       </div>
-      <div style={{ display: 'flex', gap: 12, padding: '6px 16px 20px', fontSize: 10.5, color: C.muted }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><i style={{ width: 9, height: 9, background: 'rgba(79,143,232,.7)', display: 'inline-block', borderRadius: 2 }} /> Faible</span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><i style={{ width: 9, height: 9, background: 'rgba(47,143,206,.85)', display: 'inline-block', borderRadius: 2 }} /> Modéré</span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><i style={{ width: 9, height: 9, background: 'rgba(193,45,75,.85)', display: 'inline-block', borderRadius: 2 }} /> Fort</span>
+
+      {loadError && <ErrorBox message={`Radar indisponible : ${loadError}`} />}
+
+      <div style={{ margin: '0 16px', border: `1px solid ${C.border}`, borderRadius: 6, overflow: 'hidden', height: 360, position: 'relative' }}>
+        <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
+        {currentFrame?.isForecast && (
+          <div style={{ position: 'absolute', top: 8, left: 8, background: '#7c3aed', color: '#fff', fontSize: 10.5, fontWeight: 600, padding: '3px 8px', borderRadius: 12, zIndex: 5 }}>
+            Prévision (nowcast)
+          </div>
+        )}
+      </div>
+
+      <div style={{ margin: '10px 16px 4px', display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button onClick={() => setPlaying((p) => !p)} disabled={frames.length === 0} style={{
+          background: C.panel, border: `1px solid ${C.border2}`, borderRadius: 6, padding: 8, color: C.text, cursor: frames.length ? 'pointer' : 'default', opacity: frames.length ? 1 : 0.5,
+        }}>{playing ? <Pause size={15} /> : <Play size={15} />}</button>
+        <input type="range" min={0} max={Math.max(0, frames.length - 1)} value={frameIdx}
+          onChange={(e) => { setPlaying(false); setFrameIdx(parseInt(e.target.value)); }}
+          disabled={frames.length === 0} style={{ flex: 1, accentColor: '#2f6fd1' }} />
+        <div className="mono" style={{ fontSize: 11.5, color: C.muted, width: 100, textAlign: 'right' }}>{frameLabel}</div>
+      </div>
+      <div style={{ padding: '2px 16px 20px', fontSize: 10.5, color: C.muted }}>
+        Données radar par <a href="https://www.rainviewer.com" target="_blank" rel="noreferrer" style={{ color: C.muted }}>RainViewer</a> · fond de carte © OpenStreetMap contributors
       </div>
     </div>
   );
