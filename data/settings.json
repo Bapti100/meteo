@@ -27,13 +27,6 @@
       "lon": 6.2863878,
       "id": "la-tournette-1788946519428",
       "main": false
-    },
-    {
-      "name": "Berlin",
-      "lat": 52,
-      "lon": 13,
-      "id": "berlin-1790228365184",
-      "main": true
     }
   ]
 }
