@@ -34,6 +34,13 @@
       "lon": 13.4034403,
       "id": "berlin-1790244200678",
       "main": false
+    },
+    {
+      "name": "Munchhouse",
+      "lat": 47.869334,
+      "lon": 7.45253,
+      "id": "munchhouse-1790704865569",
+      "main": false
     }
   ]
 }
