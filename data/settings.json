@@ -40,14 +40,14 @@
       "lat": 29.967,
       "lon": 2.096,
       "id": "algérie-1790778439094",
-      "main": true
+      "main": false
     },
     {
       "name": "Nina",
       "lat": -8.034983699926698,
       "lon": 2.211007838186504,
       "id": "nina-1790778611708",
-      "main": false
+      "main": true
     }
   ]
 }
