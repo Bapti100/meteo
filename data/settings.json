@@ -5,7 +5,7 @@
       "name": "Strasbourg",
       "lat": 48.58,
       "lon": 7.75,
-      "main": false
+      "main": true
     },
     {
       "name": "Thônes",
@@ -33,7 +33,7 @@
       "lat": 47.87,
       "lon": 7.45,
       "id": "munchhouse-1790773361237",
-      "main": true
+      "main": false
     }
   ]
 }
