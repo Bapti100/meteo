@@ -12,7 +12,7 @@
       "lat": 45.883413,
       "lon": 6.323024,
       "id": "thônes-1788944473553",
-      "main": true
+      "main": false
     },
     {
       "name": "Livry-Gargan",
@@ -33,7 +33,7 @@
       "lat": 47.87,
       "lon": 7.45,
       "id": "munchhouse-1790773361237",
-      "main": false
+      "main": true
     }
   ]
 }
