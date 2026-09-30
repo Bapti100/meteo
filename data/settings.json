@@ -5,7 +5,7 @@
       "name": "Strasbourg",
       "lat": 48.58,
       "lon": 7.75,
-      "main": true
+      "main": false
     },
     {
       "name": "Thônes",
@@ -40,7 +40,7 @@
       "lat": 29.967,
       "lon": 2.096,
       "id": "algérie-1790778439094",
-      "main": false
+      "main": true
     }
   ]
 }
