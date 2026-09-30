@@ -34,6 +34,13 @@
       "lon": 7.45,
       "id": "munchhouse-1790773361237",
       "main": false
+    },
+    {
+      "name": "Algérie",
+      "lat": 29.967,
+      "lon": 2.096,
+      "id": "algérie-1790778439094",
+      "main": false
     }
   ]
 }
