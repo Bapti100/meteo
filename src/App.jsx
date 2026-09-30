@@ -351,7 +351,7 @@ export default function App() {
         button { font-family: inherit; }
         input::placeholder { color: #9aa3ad; }
       `}</style>
-      <div style={{ maxWidth: 480, margin: '0 auto', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', borderLeft: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}` }}>
+      <div style={{ width: '100%', maxWidth: 1600, margin: '0 auto', minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', borderLeft: `1px solid ${C.border}`, borderRight: `1px solid ${C.border}` }}>
         <div style={{ flex: 1, paddingBottom: 72 }}>
           {view === 'dashboard' && (
             <Dashboard
@@ -403,7 +403,7 @@ function BottomNav({ view, setView }) {
   return (
     <div style={{
       position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)',
-      width: '100%', maxWidth: 480, display: 'flex', background: '#ffffff',
+      width: '100%', maxWidth: 1600, display: 'flex', background: '#ffffff',
       borderTop: `1px solid ${C.border}`, zIndex: 20, boxShadow: '0 -2px 8px rgba(20,25,35,0.04)',
     }}>
       {items.map(({ id, label, Icon }) => {
@@ -686,11 +686,11 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
           <table className="mono" style={{ borderCollapse: 'collapse', width: '100%', minWidth: 660, fontSize: 11.5 }}>
             <thead>
               <tr style={{ background: C.panel }}>
-                <Th>Jour</Th><Th>Heure</Th><Th>Temp.</Th><Th colSpan={3}>Vent km/h</Th>
+                <Th>Jour</Th><Th>Heure</Th><Th>Temp.</Th><Th>Temp. ressentie</Th><Th colSpan={3}>Vent km/h</Th>
                 <Th>Pluie 1h</Th><Th>Humid.</Th><Th>Pression</Th><Th>Temps</Th><Th>Modèle</Th>
               </tr>
               <tr style={{ background: C.panel }}>
-                <Th /><Th /><Th /><Th style={{ textAlign: 'center' }}>dir.</Th><Th style={{ textAlign: 'center' }}>moy.</Th><Th style={{ textAlign: 'center' }}>raf.</Th>
+                <Th /><Th /><Th /><Th /><Th style={{ textAlign: 'center' }}>dir.</Th><Th style={{ textAlign: 'center' }}>moy.</Th><Th style={{ textAlign: 'center' }}>raf.</Th>
                 <Th /><Th /><Th /><Th /><Th />
               </tr>
             </thead>
@@ -703,7 +703,7 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
                 return (
                   <React.Fragment key={i}>
                     {i === firstDailyIdx && (
-                      <tr><td colSpan={11} style={{ background: '#eef1f5', padding: '6px 10px', color: C.muted, fontSize: 10.5, borderTop: `1px solid ${C.border}` }}>Météo par jour — résolution 6h</td></tr>
+                      <tr><td colSpan={12} style={{ background: '#eef1f5', padding: '6px 10px', color: C.muted, fontSize: 10.5, borderTop: `1px solid ${C.border}` }}>Météo par jour — résolution 6h</td></tr>
                     )}
                     <tr style={{ borderTop: `1px solid ${C.border}` }}>
                       {r.daySpan > 0 && (
@@ -711,6 +711,7 @@ function Dashboard({ locations, dashLoc, setDashLoc, onSaveLocation, isSaved }) 
                       )}
                       <Td style={{ textAlign: 'center' }}>{String(r.hour).padStart(2, '0')}:00</Td>
                       <td style={{ padding: '4px 8px', textAlign: 'center', fontWeight: 700, background: tColor, color: textColorFor(tColor) }}>{r.temp}°C</td>
+                      <Td style={{ textAlign: 'center' }}>{apparentTemp(r.temp, r.humidity, r.windMoy) ?? '--'}°C</Td>
                       <td style={{ padding: '4px 6px', textAlign: 'center', background: '#e3f2f8' }} title={windDirFull(r.windDir)}>
                         <span style={{ display: 'inline-block', transform: `rotate(${r.windDir}deg)`, fontSize: 13 }}>↑</span>
                       </td>
@@ -822,6 +823,13 @@ const TEMP_STOPS = [[-10, '#1a3f8f'], [0, '#3b7fd1'], [8, '#63b3e0'], [14, '#8fd
 const WIND_STOPS = [[0, '#eef2f5'], [10, '#bfe3ee'], [20, '#7fd1e0'], [30, '#5bc98a'], [40, '#f0b94e'], [55, '#d1483b']];
 const HUM_STOPS = [[20, '#f2f3f4'], [50, '#c7cbd1'], [80, '#8b929c'], [100, '#5b616b']];
 function tempColor(v) { return scaleColor(v, TEMP_STOPS); }
+// Température ressentie (formule "apparent temperature", Bureau of Meteorology / Steadman simplifiée)
+function apparentTemp(tempC, humidityPct, windKmh) {
+  if (tempC == null || humidityPct == null || windKmh == null) return null;
+  const ws = windKmh / 3.6; // km/h -> m/s
+  const e = (humidityPct / 100) * 6.105 * Math.exp((17.27 * tempC) / (237.7 + tempC));
+  return Math.round((tempC + 0.33 * e - 0.70 * ws - 4.0) * 10) / 10;
+}
 function windColor(v) { return scaleColor(v, WIND_STOPS); }
 function humColor(v) { return scaleColor(v, HUM_STOPS); }
 function iconColor(code) {
@@ -1075,7 +1083,7 @@ function RadarPage({ locations, mainLoc }) {
       <div style={{ padding: '16px 16px 8px' }}>
         <div style={{ fontSize: 20, fontWeight: 600 }}>Radar précipitations</div>
         <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
-          Radar réel (RainViewer) — historique 2h + prévision (nowcast) 30 min. Centré sur {mainLoc?.name || '…'}, ~250 km de large.
+          Radar réel (RainViewer) — historique 2h + prévision (nowcast) 30 min. Centré sur {mainLoc?.name || '…'}, ~50 km de large.
         </div>
       </div>
 
