@@ -5,14 +5,14 @@
       "name": "Strasbourg",
       "lat": 48.58,
       "lon": 7.75,
-      "main": false
+      "main": true
     },
     {
       "name": "Thônes",
       "lat": 45.883413,
       "lon": 6.323024,
       "id": "thônes-1788944473553",
-      "main": true
+      "main": false
     },
     {
       "name": "Livry-Gargan",
