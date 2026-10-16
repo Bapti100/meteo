@@ -5,7 +5,7 @@
       "name": "Strasbourg",
       "lat": 48.58,
       "lon": 7.75,
-      "main": false
+      "main": true
     },
     {
       "name": "Thônes",
@@ -47,7 +47,7 @@
       "lat": 44.387029,
       "lon": 6.647318,
       "id": "barcelonnette-1792129524865",
-      "main": true
+      "main": false
     }
   ]
 }
