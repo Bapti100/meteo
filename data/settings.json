@@ -47,14 +47,14 @@
       "lat": 44.387029,
       "lon": 6.647318,
       "id": "barcelonnette-1792129524865",
-      "main": true
+      "main": false
     },
     {
       "name": "Super-sauze pieds",
       "lat": 44.3522602,
       "lon": 6.675974,
       "id": "super-sauze-pieds-1792567006583",
-      "main": false
+      "main": true
     }
   ]
 }
