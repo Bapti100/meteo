@@ -12,7 +12,7 @@
       "lat": 45.883413,
       "lon": 6.323024,
       "id": "thônes-1788944473553",
-      "main": true
+      "main": false
     },
     {
       "name": "Livry-Gargan",
@@ -47,7 +47,7 @@
       "lat": 45.896718,
       "lon": 6.441242,
       "id": "la-clusaz-1792753418429",
-      "main": false
+      "main": true
     }
   ]
 }
