@@ -12,7 +12,7 @@
       "lat": 45.883413,
       "lon": 6.323024,
       "id": "thônes-1788944473553",
-      "main": false
+      "main": true
     },
     {
       "name": "Livry-Gargan",
@@ -40,13 +40,6 @@
       "lat": 8.034983699926698,
       "lon": 2.211007838186504,
       "id": "nina-1790778656029",
-      "main": false
-    },
-    {
-      "name": "Barcelonnette",
-      "lat": 44.387029,
-      "lon": 6.647318,
-      "id": "barcelonnette-1792129524865",
       "main": false
     }
   ]
