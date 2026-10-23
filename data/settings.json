@@ -41,6 +41,13 @@
       "lon": 2.211007838186504,
       "id": "nina-1790778656029",
       "main": false
+    },
+    {
+      "name": "La Clusaz",
+      "lat": 45.896718,
+      "lon": 6.441242,
+      "id": "la-clusaz-1792753418429",
+      "main": false
     }
   ]
 }
