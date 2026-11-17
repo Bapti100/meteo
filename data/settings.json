@@ -5,7 +5,7 @@
       "name": "Strasbourg",
       "lat": 48.58,
       "lon": 7.75,
-      "main": true
+      "main": false
     },
     {
       "name": "Thônes",
@@ -54,7 +54,7 @@
       "lat": 12.6271607,
       "lon": -7.9982376,
       "id": "12.63,--8.00-1794943809128",
-      "main": false
+      "main": true
     }
   ]
 }
